@@ -1,0 +1,37 @@
+name: tomori
+
+services:
+  postgres:
+    image: postgres:17.12-alpine@sha256:526f86d93c6ea08fd3f1fe5605650cacc781b2c6013169a0ad8f42c7d3d84f32
+    container_name: tomori-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${TOMORI_PG_USER:-tomori}
+      POSTGRES_PASSWORD: ${TOMORI_PG_PASSWORD:-tomori_dev_password}
+      POSTGRES_DB: ${TOMORI_PG_DB:-tomori_dev}
+      TZ: ${TZ:-Asia/Shanghai}
+      PGTZ: ${TZ:-Asia/Shanghai}
+    ports:
+      - "127.0.0.1:${TOMORI_PG_PORT:-25432}:5432"
+    volumes:
+      - tomori_pgdata:/var/lib/postgresql/data
+      - ./deploy/postgres/init-dbs.sql:/docker-entrypoint-initdb.d/01-init-dbs.sql:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER:-tomori}" -d "$${POSTGRES_DB:-tomori_dev}"
+      interval: 3s
+      timeout: 5s
+      retries: 15
+      start_period: 20s
+    networks:
+      - tomori_net
+
+volumes:
+  tomori_pgdata:
+    name: tomori_pgdata
+
+networks:
+  tomori_net:
+    name: tomori_net
+    driver: bridge
