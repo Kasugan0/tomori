@@ -18,14 +18,16 @@
 
 | 文档 | 内容 |
 |---|---|
+| **[`docs/DECISION.md`](docs/DECISION.md)** | ⭐ **待裁决事项清单（40 条，按「是否阻塞阶段二」分四档）—— 阶段一验收的唯一入口，请从这里开始** |
 | [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) | 3 个角色 / 9 个核心用例 / 29 条功能需求 + 29 条可验证判据 / `UC ↔ FR ↔ VC ↔ 测试层次` 追溯矩阵 / 四类「不做」清单 |
-| [`docs/SCHEMA-DESIGN.md`](docs/SCHEMA-DESIGN.md) | 17 张业务表的列、约束、索引、Alembic 迁移策略（76 CHECK / 41 外键列 / 22 UNIQUE / 37 索引 / 6 部分唯一） |
+| [`docs/SCHEMA.md`](docs/SCHEMA.md) | 17 张业务表的列、约束、索引、Alembic 迁移策略（76 CHECK / 41 外键列 / 22 UNIQUE / 37 索引 / 6 部分唯一） |
 | [`docs/BUSINESS-LOGIC.md`](docs/BUSINESS-LOGIC.md) | 4 套状态机（29 状态 / 36 条合法边 / 11 终态 / 0 死路）、三大非 CRUD 机制（区域派单、故障分级、返修闭环） |
-| [`docs/API-CONTRACT.md`](docs/API-CONTRACT.md) | 57 个端点 / 34 个 `error.code` / 128 个 `data-testid` 锚点（121 已冻结 + 7 灰区待裁决） |
+| [`docs/API.md`](docs/API.md) | 57 个端点 / 34 个 `error.code` / 128 个 `data-testid` 锚点（121 已冻结 + 7 灰区待裁决） |
 | [`docs/TECH-STACK.md`](docs/TECH-STACK.md) | 定稿技术栈与版本号、8 条前端版本陷阱、`vision/` 状态澄清、目录结构规划 |
-| [`docs/TEAM-CHARTER.md`](docs/TEAM-CHARTER.md) | 9 人团队角色边界、写入域矩阵、反假绿纪律、坐标四级判据 |
+| [`docs/team/TEAM.md`](docs/team/TEAM.md) | 9 人团队角色边界、写入域矩阵、协作机制、反假绿纪律、坐标四级判据、提交协议 |
+| [`docs/team/LEAD.md`](docs/team/LEAD.md) | Lead 方法论：角色边界、裁决四段模板、审计四问、7 次判据错误诚实记录、继任者检查清单 |
 | [`docs/RUNBOOK.md`](docs/RUNBOOK.md) | 本地 PG 栈启停、端口分配、远端 GPU 训练管线与产物回传校验 |
-| [`audits/stage1-audit.md`](audits/stage1-audit.md) | 阶段一独立审计报告：6 项 P0 + 4 项 P1，已全部修正并复核 |
+| [`audits/stage1-audit.md`](audits/stage1-audit.md) | 阶段一独立审计报告：6 项 P0 + 4 项 P1，已全部修正并复核（**历史快照，坐标以当时版本为准**） |
 
 ---
 

@@ -126,7 +126,7 @@
 1. **`env.py` 的 `target_metadata` 必须 import 全部 17 个 models**。否则 autogenerate「看不到表」，会生成一批 `drop_table` —— 这是**破坏性**的。正确做法：`from app.models import * `（通过 `models/__init__.py` 汇总），并 import `Base`。
 2. **`alembic.ini` 的 `sqlalchemy.url` 必须留空**。URL 由 `env.py` 从 `Settings` 读，避免密钥进版本库。这是安全要求，不是风格偏好。
 
-**`alembic_version` 的口径声明**（与 `docs/SCHEMA-DESIGN.md` §0 一致）：它是迁移工具的版本记录表，仅一列 `version_num varchar(32)`，**不承载业务语义、不参与业务查询**。任何「数表」的断言必须显式排除：`WHERE table_name <> 'alembic_version'`。
+**`alembic_version` 的口径声明**（与 `docs/SCHEMA.md` §0 一致）：它是迁移工具的版本记录表，仅一列 `version_num varchar(32)`，**不承载业务语义、不参与业务查询**。任何「数表」的断言必须显式排除：`WHERE table_name <> 'alembic_version'`。
 
 ### 1.5 PostgreSQL
 
@@ -196,7 +196,7 @@ vision = ["ultralytics", "opencv-python-headless"]   # 拉入 torch / torchvisio
 | `python-multipart` | — | `multipart/form-data` 解析。缺它会 500 | 🟡 |
 | `tzdata` | `2026.6` | Alpine 容器无系统 tzdata，`ZoneInfo("Asia/Shanghai")` 会 `ZoneInfoNotFoundError` | 🟡 |
 
-> 🔐 **Pillow 是安全边界，不是图像工具**：视觉模块（`vision/`）**不是可信输入源**——它接收的图片来自巡查员上传。因此服务端必须在**交给视觉模块之前**用 Pillow 做一次独立校验：魔数、帧数（拒动图）、像素上限（防解压炸弹）。**不能假设 `vision` 会正确校验**。详见 `docs/API-CONTRACT.md` 媒体错误码章节。
+> 🔐 **Pillow 是安全边界，不是图像工具**：视觉模块（`vision/`）**不是可信输入源**——它接收的图片来自巡查员上传。因此服务端必须在**交给视觉模块之前**用 Pillow 做一次独立校验：魔数、帧数（拒动图）、像素上限（防解压炸弹）。**不能假设 `vision` 会正确校验**。详见 `docs/API.md` 媒体错误码章节。
 
 ### 1.7 明确**不引入**的依赖及理由
 
@@ -259,7 +259,7 @@ vision = ["ultralytics", "opencv-python-headless"]   # 拉入 torch / torchvisio
 | V2 | **AI 候选必须经巡查员确认才能派工** | 状态机：`AI_CANDIDATE_PENDING` →（人工 `confirm`）→ `PENDING_DISPATCH`；`confirmed_by_inspector=false` 时派工返回 `422 AI_CANDIDATE_NOT_CONFIRMED`，且有 DB `CHECK` 兜底 | 模型直接驱动业务 = 越权 |
 | V3 | **模型不得替代电气安全检查** | 电气安全检查是**维修员**在完工时填写的 5 项清单（`safety_checklist_json`），`electrical_safety_checked=false` 时完工返回 `422 ELECTRICAL_SAFETY_CHECK_REQUIRED`，DB `CHECK` 兜底 | 拿 AI 当安全认证 = 事故责任 |
 
-> **V2 与 V3 是 DB 层强制的，不是「约定」**。两者都有 `CHECK` 约束与服务层校验两层。详见 `docs/BUSINESS-LOGIC.md` 状态机与 `docs/SCHEMA-DESIGN.md` §9.1。
+> **V2 与 V3 是 DB 层强制的，不是「约定」**。两者都有 `CHECK` 约束与服务层校验两层。详见 `docs/BUSINESS-LOGIC.md` 状态机与 `docs/SCHEMA.md` §9.1。
 
 ### 2.4 YOLO 训练方案与数据集合规（**本节是交付的许可证义务，不可删减**）
 
@@ -342,7 +342,7 @@ vision = ["ultralytics", "opencv-python-headless"]   # 拉入 torch / torchvisio
 > | 3 | 源码内 checkpoint 名单 | `v8.4.216/ultralytics/utils/downloads.py` L26：`[f"yolo26{k}{suffix}.pt" for k in "nsmlx" ...]` |
 > | 4 | 官方权重发布 | `api.github.com/repos/ultralytics/assets/releases/tags/v8.4.0` → `yolo26s.pt` = 20,422,725 B，可直下 |
 >
-> **纪律不变，改的是「有出处就写具体名字」**：本文档与 `docs/RUNBOOK.md` / `docs/SCHEMA-DESIGN.md` / `.env.example` 中提到 `yolo26*.pt` 时，**必须能指向上表任一条**。写具体 checkpoint **不再违规**——**没有出处**才违规（`F14`）。
+> **纪律不变，改的是「有出处就写具体名字」**：本文档与 `docs/RUNBOOK.md` / `docs/SCHEMA.md` / `.env.example` 中提到 `yolo26*.pt` 时，**必须能指向上表任一条**。写具体 checkpoint **不再违规**——**没有出处**才违规（`F14`）。
 > 完整核实记录（含复现命令与原始输出）：`.team/notes/research/yolo26-official-sources.md` + `.team/notes/research/logs/yolo26-official-evidence.log`
 >
 > 🔴 **但仍有一条相邻的 `F14` 违例未清（属 `dev-ops` 域，不在本文档）**：`docs/RUNBOOK.md:222` 把「32G/48G 显存 → `batch=16~32`/`32~64`」标注为「依据 Ultralytics YOLO26 **官方训练指南**」。经查，官方**从未**按显存容量给分档数字，只说「reduce the batch size incrementally」（渐进减小）并推荐 `batch=-1`；官方 `imgsz` 默认 `640` 而非 `1024`。**同段里只有「`batch=-1` 约 60% 显存」一条真有出处。** 替换文案已写入 `.team/notes/research/yolo26-official-sources.md` §3.5，待 `dev-ops` 执行。
@@ -483,9 +483,9 @@ tomori/
 >
 > **「五方一致」是本项目自定的工程要求（`docs-writer` 提出，`Lead` 放行）**：`docs/TECH-STACK.md`（本表）/ `docs/RUNBOOK.md` / `compose.yaml` / `.env.example` / `deploy/stack-guard.sh`。本文档与其他四方不一致即为缺陷。
 >
-> 🔴 **归因修正**（`audits/stage1-audit.md` P0-5）：此处原写「`docs/team/TEAM.md` §5 要求的『五方一致』」，但 `rg "五方一致" docs/team/TEAM.md` **全库零命中**，且 `TEAM.md` §5 实为 §5.1–§5.6 历史事故复盘、不讲端口一致性。**这是一条无出处的断言（违反 `TEAM-CHARTER.md` §4 的 `F14`），但要求本身是合理的，故保留要求、只改归因。**
+> 🔴 **归因修正**（`audits/stage1-audit.md` P0-5）：此处原写「`docs/team/TEAM.md` §5 要求的『五方一致』」，但 `rg "五方一致" docs/team/TEAM.md` **全库零命中**，且 `TEAM.md` §5 不讲端口一致性。**这是一条无出处的断言（违反 `docs/team/TEAM.md` §4.3 的 `F14`），但要求本身是合理的，故保留要求、只改归因。**
 >
-> ⚠️ **`docs/team/TEAM.md` 的端口数字不适用于本项目**：其 §5 与 `:249`/`:275` 提到的 E2E 独占端口 `18080`/`18081`/`19090`/`19092` 是 `new-new-api` 项目的，**本项目零命中**（本项目 E2E 实为 `18142`/`15174`，见下表）。阶段二**不得**照 `TEAM.md` 去找 `18080` 窗口。
+> ✅ **已被 `task-18` 消除的隐患**：本条原有一句「`docs/team/TEAM.md` 中旧参考项目的服务端口不适用于本项目」的警告——那些异项目端口已随 `task-18` 的 `docs/team/` 合并全部清除，`docs/team/` 目录内已**零命中**（实测 0 行）；`docs/` 下仅在 **§10 变更记录**（2026-11-21 审计修正行）中作为历史沿革保留，该警告在正文中已无对象可指，故删除。**端口数字的唯一权威是本文件下表与 `docs/RUNBOOK.md` §2。**
 
 | 服务 | 端口 | 绑定 | 配置项 | 说明 |
 |---|---|---|---|---|
@@ -575,16 +575,22 @@ mcp__magpie__context7__resolve-library-id(libraryName="FastAPI", query="...")
 
 ---
 
-## 8. 待用户裁决清单（**本文档相关的未关闭项**）
+## 8. 待用户裁决清单 → 见 `docs/DECISION.md`
 
-| # | 事项 | 本文档的处理 | 需谁裁决 |
-|---:|---|---|---|
-| **TS-1** | SQLAlchemy 是否锁 2.0 线（`2.1.9` 已 GA） | 按 Lead 裁决写 `>=2.0.58,<2.1`，并在 §1.2.1 记录完整决策理由 | **用户** |
-| **TS-2** | ~~「YOLO26」的准确含义~~ **已核实**；剩「选哪一档 scale」 | ✅ **命名出处已闭环**（`task-15`）：`YOLO26` = Ultralytics 官方模型家族（`docs.ultralytics.com/models/yolo26`；`ultralytics==8.4.216` 内含 `cfg/models/26/yolo26.yaml`），`n/s/m/l/x` 五档均为真。**剩余待决**：本项目走哪档（现 `.env.example` 回退用 `s`，`RUNBOOK` 训练示例用 `n`） | **用户**（选 scale）/ `vision-dev`（标定） |
-| **TS-3** | `opencv-python-headless` 5.x 与既有 OpenCV 4 代码兼容性 | 未实测。阶段二落地时先做一次 API 兼容冒烟 | `vision-dev` |
-| **TS-4** | 前端精确版本 pin | 本文档只承诺主版本区间；精确 pin 在 `web/pnpm-lock.yaml` 生成时确定 | `frontend-dev` |
-| **TS-5** | Element Plus `data-testid` 透传的独立复核 | 已按 `frontend-dev` 自查写入 §3.2.1，标注「`task-13` 独立复核待补」 | `docs-writer`（`task-13`） |
-| **TS-6** | ~~依赖落点：根 `pyproject.toml` vs `backend/pyproject.toml` 子包~~ | ✅ **已裁决（2026-11-21）= 单包 + `vision` optional extra**。根 `pyproject.toml` 唯一；不建子 `pyproject.toml`；`ultralytics`/`opencv-python-headless` 入 `[project.optional-dependencies] vision`，`uv sync --extra vision` 装。详见 §1.6 | ✅ 已闭合（`Lead`） |
+本文件相关的 6 项已并入 **`docs/DECISION.md`**（全项目唯一权威清单）：
+
+| 原编号 | 事项 | `DECISION.md` | 状态 |
+|---|---|---|---|
+| `TS-1` | SQLAlchemy 是否锁 2.0 线（`2.1.9` 已 GA） | **`D-05`** | 🟡 `Lead` 已裁决 `<2.1`，待你确认 |
+| `TS-2` | YOLO26 命名出处 + 走哪档 scale | **`D-06`** + **`D-33`** | 🟡 命名已闭环；档位暂定 `s`，待确认 |
+| `TS-3` | `opencv-python-headless` 5.x 兼容性 | **`D-22`** | 🟡 阶段二首验 |
+| `TS-4` | 前端精确版本 pin | **`D-23`** | 🟡 `^` + lock 文件 |
+| `TS-5` | Element Plus `data-testid` 透传独立复核 | **`D-34`** | 🟢 已闭合（源码级确证，推翻原自查结论） |
+| `TS-6` | 依赖落点：根 `pyproject.toml` vs 子包 | **`D-32`** | 🟢 已闭合（单包 + `vision` optional extra） |
+
+> **两处据实同步**（原文已过时，已不再写进本文档）：
+> - **`TS-2`**：`dev-ops` 在 `task-16` 已把 `docs/RUNBOOK.md` 训练 checkpoint 统一为 `yolo26s.pt`，与 `.env.example` 的 `YOLO_FALLBACK_MODEL` **两边已一致**——不存在「`RUNBOOK` 用 `n`、配置用 `s`」的分歧。
+> - **`TS-5`**：`el-input` 透传 `data-testid` 已**源码级确证**（`input.vue` L240/L36 + `use-attrs` L12），落到内层原生 `<input>`；`frontend-dev` 原判断被 `Lead` 裁决 `P1-2` 推翻。
 
 ---
 
@@ -611,11 +617,12 @@ mcp__magpie__context7__resolve-library-id(libraryName="FastAPI", query="...")
 
 **明确不属于本文档的**：
 - 端口/容器/部署细节 → `docs/RUNBOOK.md`（`dev-ops` 独占）
-- 表结构 DDL → `docs/SCHEMA-DESIGN.md`
+- 表结构 DDL → `docs/SCHEMA.md`
 - 业务规则与状态机 → `docs/BUSINESS-LOGIC.md`
-- API 端点与错误码 → `docs/API-CONTRACT.md`
+- API 端点与错误码 → `docs/API.md`
 - 需求与验收判据 → `docs/REQUIREMENTS.md`
-- 团队角色与协作纪律 → `docs/TEAM-CHARTER.md`
+- 团队角色与协作纪律 → `docs/team/TEAM.md`、`docs/team/LEAD.md`
+- **全部待裁决事项的唯一权威清单** → `docs/DECISION.md`
 
 ---
 
@@ -627,3 +634,4 @@ mcp__magpie__context7__resolve-library-id(libraryName="FastAPI", query="...")
 | 2026-11-21 | **审计修正**：「五方一致」出处归因为**无出处断言**（`TEAM.md` 零命中）→ 改为本项目自定要求并保留要求本身；补注 `TEAM.md` 的 `18080`/`18081`/`19090`/`19092` **不适用于本项目**；§1.6 补「当前 0 依赖」事实说明 + 登记 `TS-6` 依赖落点待裁（**不替架构做决定**）。**技术选型与版本号零改动** | `audits/stage1-audit.md` P0-5/P0-6/P1-4 |
 | 2026-11-21 | **`TS-6` 裁决落地**：依赖落点 = **单包 + `vision` optional extra**（不是双包）。根 `pyproject.toml` 唯一；`ultralytics`/`opencv-python-headless` 入 `[project.optional-dependencies] vision`，`uv sync --extra vision` 装。§1.6 新增裁决块与 `pyproject.toml` 骨架示例；§4 目录树删除 `backend/pyproject.toml` 行、改为根 `pyproject.toml` 唯一。**20 个依赖清单与版本号零改动** | `Lead` 裁决 A（`task-15`） |
 | 2026-11-21 | **`TS-2` 命名出处闭环**：`YOLO26` 经 4 条一手证据核实为 Ultralytics **官方**模型家族（官方文档 `released January 2026` / `ultralytics==8.4.216` 内含 `cfg/models/26/yolo26.yaml` / `downloads.py` checkpoint 名单 / `assets v8.4.0` 权重 20,422,725 B）。§2.4.5 禁令从「不得断言」改为「**必须带下述出处**」——有出处即可写具体 checkpoint，无出处才违规。**同时指出 `RUNBOOK.md:222` 相邻的 `F14` 违例（把工程初值归因为官方指南），替换文案已交给 `dev-ops`** | `audits/stage1-audit.md` P1-2（`Lead` 裁决 B） |
+| 2026-11-21 | **文档重组同步（`task-18`）**：§5 归因引用更新为 `docs/team/TEAM.md` §4.3，删除因 `docs/team/` 合并而失去对象的旧端口警告并写明口径（`docs/team/` 零命中、`docs/` 仅本表留史）；§8 改为指向 `docs/DECISION.md` 的短指针并同步 `TS-2`/`TS-5` 最新状态；§9 交叉引用同步 `SCHEMA.md` / `API.md` / `docs/team/` / `DECISION.md`。**技术选型与版本号零改动** | 用户要求 + `task-18` |

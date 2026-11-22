@@ -44,6 +44,7 @@ uploads/
 # Team & evidence artifacts
 .team/
 .evidence-backup/
+.serena/memories/
 
 # Environment variables (keep .env.example tracked)
 .env

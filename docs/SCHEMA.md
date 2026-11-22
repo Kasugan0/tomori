@@ -1,8 +1,9 @@
 > 状态：阶段一定稿候选 —— 待用户审阅裁决（未定稿）
 
-# 数据库结构设计（SCHEMA-DESIGN）
+# 数据库结构设计（SCHEMA）
 
-> **文档归属**：`docs-writer`｜**本文件写入域**：`docs/SCHEMA-DESIGN.md`
+> **文档归属**：`docs-writer`｜**本文件写入域**：`docs/SCHEMA.md`
+> **曾用名**：`docs/SCHEMA-DESIGN.md`（`task-18` 更名，**设计内容零改动**；`audits/stage1-audit.md` 中的旧坐标按此文件名对应，行号不变）
 > **读者**：`backend-dev`（唯一实现依据）、`tester`（DB 约束断言依据）、`auditor`
 > **本文件的地位**：**17 张业务表的物理结构、约束、索引、迁移顺序的唯一权威**。
 
@@ -602,14 +603,18 @@ WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
 
 ---
 
-## 10. 待用户裁决清单
+## 10. 待用户裁决清单 → 见 `docs/DECISION.md`
 
-| # | 事项 | 现状 | 影响 |
-|---:|---|---|---|
-| **SD-1** | 冗余列 `region_id`/`rework_count` 是否保留 | 保留并由断言 1/2/4 守住 | 若删列需改多处查询 |
-| **SD-2** | 孤儿证据回收任务的具体策略（保留天数、批大小） | **未设计** | 重复上传会产生多行，需清理 |
-| **SD-3** | `accounts.skills` 是否需要 GIN 索引 | 当前全表扫 | 技能数据量大时需索引 |
-| **SD-4** | PG 版本 17.12 是否需兼容 16 | 实测环境 17.12 | 若需兼容须避免 17-only 特性 |
+本文件相关的 4 项已并入 **`docs/DECISION.md`**（全项目唯一权威清单）：
+
+| 原编号 | 事项 | `DECISION.md` |
+|---|---|---|
+| `SD-1` | 冗余列 `region_id` / `rework_count` 是否保留 | **`D-24`**（🟢 已闭合：保留，由三条断言守住一致性） |
+| `SD-2` | 孤儿证据回收任务策略（保留天数 / 批大小） | **`D-25`** |
+| `SD-3` | `accounts.skills` 是否需要 GIN 索引 | **`D-26`** |
+| `SD-4` | PG 17.12 是否需兼容 16 | **`D-10`** |
+
+> **冗余列的设计理由仍在本文件 §3.3**（为什么冗余、为什么保留、由哪些断言守住）——那是设计内容，不搬走。
 
 ---
 
@@ -629,7 +634,7 @@ WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
 
 **明确不属于本文档的**：
 - 状态机转移语义 → `docs/BUSINESS-LOGIC.md`
-- 端点与错误码 → `docs/API-CONTRACT.md`
+- 端点与错误码 → `docs/API.md`
 
 ---
 
@@ -639,3 +644,4 @@ WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
 |---|---|---|
 | 2026-11-21 | 初版。17 表 / 76 CHECK / 41 外键列 / 22 UNIQUE / 37 索引 / 6 部分唯一；吸收 Lead 的 `fault_evidences.ticket_id` 可空裁决与 `uq_..._sha256_per_ticket` 已知取舍 | `task-7` |
 | 2026-11-21 | §4.4 CHECK 7 注中 `yolo26s.pt` **补官方出处**（Ultralytics 官方模型文档 + `ultralytics==8.4.216` 源码坐标），并标注「选哪一档 scale 属工程初值未标定」。**17 表结构、76/41/22/37/6 计数、CHECK 语义零改动** | `audits/stage1-audit.md` P1-2 |
+| 2026-11-21 | **改名**：`docs/SCHEMA-DESIGN.md` → `docs/SCHEMA.md`（`task-18`）。标题 `# 数据库结构设计（SCHEMA-DESIGN）` → `# 数据库结构设计（SCHEMA）`，自指写入域与全仓交叉引用同步更新。**设计内容零改动**：17 表 / 76 CHECK / 41 外键列 / 22 UNIQUE / 37 索引 / 6 部分唯一 / 12 非唯一部分索引全部不变 | 用户要求（`task-18`） |

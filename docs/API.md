@@ -1,8 +1,9 @@
 > 状态：阶段一定稿候选 —— 待用户审阅裁决（未定稿）
 
-# 接口契约（API-CONTRACT）
+# 接口契约（API）
 
-> **文档归属**：`docs-writer`｜**本文件写入域**：`docs/API-CONTRACT.md`
+> **文档归属**：`docs-writer`｜**本文件写入域**：`docs/API.md`
+> **曾用名**：`docs/API-CONTRACT.md`（`task-18` 更名，**设计内容零改动**；`audits/stage1-audit.md` 中的旧坐标按此文件名对应，行号不变）
 > **读者**：`frontend-dev`（唯一实现依据）、`backend-dev`、`tester`（E2E 断言依据）、`auditor`
 > **上游素材**：`.team/notes/backend-dev/stage1-backend-spec-api.md`（端点/错误码/幂等）、`.team/notes/frontend-dev/stage1-frontend-spec-input.md`（`data-testid` 冻结清单）、`.team/notes/vision-dev/`（视觉契约）
 > **本文件的地位**：**端点、错误码、幂等语义、`data-testid` 锚点的唯一权威**。前端实现以本文件为准；本文与素材冲突时以本文为准并经 `Lead` 裁决。
@@ -314,7 +315,7 @@
 2. 「白天灭灯不误报」这条红线要能**在 DB 侧断点**（`tester` 用例断言「`fault_tickets` 0 行 + `fault_evidences` 有行 + 点位未被锁」）；
 3. 若全丢弃，就没有任何记录能证明系统「看到了但正确抑制」，**红线变成不可验证的口头承诺**。
 
-**代价**：`fault_evidences.ticket_id` 必须可空（见 `docs/SCHEMA-DESIGN.md` §4.2 的 `ck_fault_evidences_ticket_or_orphan_inspection`）。
+**代价**：`fault_evidences.ticket_id` 必须可空（见 `docs/SCHEMA.md` §4.2 的 `ck_fault_evidences_ticket_or_orphan_inspection`）。
 
 ---
 
@@ -570,15 +571,19 @@ SLA 超时测试**不得** `sleep` 到 deadline 之后。调用 `POST /sla/scan`
 
 ---
 
-## 10. 待用户裁决清单（本文件相关）
+## 10. 待用户裁决清单 → 见 `docs/DECISION.md`
 
-| # | 事项 | 现状 | 影响 |
-|---:|---|---|---|
-| **AC-1** | 7 个路由表 `data-testid` 是否补入冻结清单 | 只在路由表出现，未进 §10.2 | 不补则 `tester` 无据可依 |
-| **AC-2** | `el-option` 属性透传是否成立 | **无任何出处** | 阶段二首验，否则 §8.5 断言悬空 |
-| **AC-3** | 单次上传张数：后端 `1..10` vs 前端按单图 | `vision-dev` 按单帧单图设计，前端按 1 张实现 | 批量多点位巡查需追加设计 |
-| **AC-4** | `422 VALIDATION_ERROR` 是否进冻结码表 | `frontend-dev` §6.2 未列（`frontend-dev` L677 提及） | 本文档已列为 §3.2 第 12 项，需确认 |
-| **AC-5** | ~~`413` 阈值：15 MiB vs 前端拦 10 MiB~~ **已可裁决 → 15 MiB** | 前端「取更严者」算法引用的 `.env.example` 值**已从 10 改为 15**（`dev-ops` `task-9`），故 `min(15, 15) = 15`。前端文案与 `before-upload` 阈值须改 **15 MiB / `15,728,640` B** | **已裁定 15 MiB**（`audits/stage1-audit.md` P1-3）；仅剩前端实现待落地 |
+本文件相关的 5 项已并入 **`docs/DECISION.md`**（全项目唯一权威清单）：
+
+| 原编号 | 事项 | `DECISION.md` | 状态 |
+|---|---|---|---|
+| `AC-1` | 7 个路由表 `data-testid` 是否补入冻结清单 | **`D-04`** | 🔴 待裁决 |
+| `AC-2` | `el-option` 属性透传是否成立 | **`D-20`** | 🟡 已知无出处，阶段二首验 |
+| `AC-3` | 单次上传张数：后端 `1..10` vs 前端按单图 | **`D-03`** | 🔴 待裁决 |
+| `AC-4` | `422 VALIDATION_ERROR` 是否进冻结码表 | **`D-19`** | 🟡 已暂定列入（错误码 **34**） |
+| `AC-5` | `413` 阈值 15 MiB | **`D-02`** | 🟡 已裁定（`P1-3`） |
+
+> **`AC-5` 已可裁决 → 15 MiB**：前端「取更严者」算法引用的 `.env.example` 值已从 10 改为 15（`dev-ops` `task-9`），故 `min(15, 15) = 15`。前端文案与 `before-upload` 阈值须改 **15 MiB / `15,728,640` B**。此项状态已转为「已裁定，仅剩前端实现待落地」。
 
 ---
 
@@ -598,7 +603,7 @@ SLA 超时测试**不得** `sleep` 到 deadline 之后。调用 `POST /sla/scan`
 
 **明确不属于本文档的**：
 - 状态机转移规则与算法 → `docs/BUSINESS-LOGIC.md`
-- 表结构与约束 → `docs/SCHEMA-DESIGN.md`
+- 表结构与约束 → `docs/SCHEMA.md`
 - 需求编号与验收判据 → `docs/REQUIREMENTS.md`
 - 技术栈版本 → `docs/TECH-STACK.md`
 - 部署与端口 → `docs/RUNBOOK.md`
@@ -611,3 +616,4 @@ SLA 超时测试**不得** `sleep` 到 deadline 之后。调用 `POST /sla/scan`
 |---|---|---|
 | 2026-11-21 | 初版。45 端点 / 33 错误码 / 幂等 12 端点 / 媒体五步 / 128 冻结 testid；**独立复核推翻 `el-input` 落根 div 的断言** | `task-7` |
 | 2026-11-21 | **审计修正**：端点 45 → **57**（P0-1）、`§2.5` 标题 9 → **11**（P0-1）、`§8.3` 标题 128 → **121**（P0-4）、错误码 33 → **34**（P1-1，`VISION_INFERENCE_FAILED` 入表）、`AC-5` 统一 **15 MiB**（P1-3）。**设计内容零改动** | `audits/stage1-audit.md` |
+| 2026-11-21 | **改名**：`docs/API-CONTRACT.md` → `docs/API.md`（`task-18`）。标题 `# 接口契约（API-CONTRACT）` → `# 接口契约（API）`，自指写入域与全仓交叉引用同步更新。**设计内容零改动**：57 端点 / 34 `error.code` / 12 幂等 / 128 = 121 + 7 全部不变 | 用户要求「`API-CONTRACT.md` 改为 `API.md`」 |
