@@ -8,6 +8,9 @@ build/
 dist/
 wheels/
 *.egg-info
+*.egg-info/
+src/*.egg-info/
+.eggs/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
@@ -36,9 +39,11 @@ playwright/.cache/
 *.onnx
 *.engine
 *.safetensors
+vision/weights/
+vision/reports/
 vision/datasets/
 vision/runs/
-runs/
+/runs/
 uploads/
 
 # Team & evidence artifacts
