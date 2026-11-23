@@ -1,4 +1,4 @@
-> 状态：阶段一定稿候选 —— 待用户审阅裁决（未定稿）
+> 状态：阶段一定稿（待用户放行阶段二实现）
 
 # 接口契约（API）
 
@@ -10,14 +10,14 @@
 
 ---
 
-## 0. 统计口径分层声明（`docs/team/TEAM.md` §4.6）
+## 0. 统计口径分层声明（`docs/team/TEAM.md` §5.3）
 
 | 项 | 分子 | 分母 | 排除项 |
 |---|---:|---|---|
-| REST 端点数 | **57**（见 §2 逐条） | 本文件 §2 全部路由行 | `/health` 与静态资源挂载：**实测 §2 表内 `/health` 出现 0 次**，故该排除项对本计数无影响（`audits/stage1-audit.md` P0-1） |
+| REST 端点数 | **57**（见 §2 逐条） | 本文件 §2 全部 57 条路由行（含 §2.4/§2.5 共 2 条多方法/多路径合并行，展开为 60 个 (method, path) 端点） | `/health` 与静态资源挂载：**实测 §2 表内 `/health` 出现 0 次**，故该排除项对本计数无影响（`audits/stage1-audit.md` P0-1） |
 | `error.code` 数量 | **34**（见 §3 逐行） | 本文件 §3 表 | 无（每个 `code` 唯一映射一个状态码；原 33 系 `VISION_INFERENCE_FAILED` 只在脚注未入表，见 `audits/stage1-audit.md` P1-1） |
-| 幂等必需端点 | **12**（见 §6.3） | 全部 `POST` 写端点 | 其余 `POST`/`GET`/`PATCH`/`DELETE` 忽略 `Idempotency-Key` |
-| 冻结 `data-testid` | **128** = 121（§10.2 冻结表去重）+ 7（路由表独有） | 本文件 §8 | `shell-*` 中纯展示无断言需求者见 §8.3 |
+| 幂等必需端点 | **12**（见 §6.4） | 全部 `POST` 写端点 | 其余 `POST`/`GET`/`PATCH`/`DELETE` 忽略 `Idempotency-Key` |
+| 冻结 `data-testid` | **128** = 121（§8.2/§8.3 冻结表去重）+ 7（原灰区，`D-04` 已裁决补入，见 §8.2/§8.3 J 组） | 本文件 §8 | `shell-*` 中纯展示无断言需求者见 §8.3 |
 
 > **`error.code` 与 HTTP 状态码不是一对一**（多个 `code` 共享一个状态码，如 4 个 `415`/`422` 家族），**但每个 `code` 到状态码的映射必须唯一**——这是 `§3` 表存在的唯一理由。**同一 `code` 不允许出现在两个状态码下。**
 
@@ -68,7 +68,7 @@
 
 ## 2. 端点清单（57 个）
 
-> **计数口径**：`§2.1`–`§2.5` 五个表格的路由行之和 = `12 + 12 + 14 + 8 + 11 = 57`。改动记录见 `audits/stage1-audit.md` P0-1。
+> **计数口径**：`§2.1`–`§2.5` 五个表格的路由行之和 = `12 + 12 + 14 + 8 + 11 = 57`（含 §2.4 `GET`/`PATCH` `/repair-processes`、`/repair-processes/{id}`〔L136〕与 §2.5 `GET` `/rework-orders`、`/rework-orders/{id}`〔L145〕共 2 条多方法/多路径合并行，展开为 60 个 (method, path) 端点：L136 行对应 3 个端点（`GET /repair-processes`、`GET /repair-processes/{id}`、`PATCH /repair-processes/{id}`，无 `PATCH /repair-processes`），加 L145 行 2 个（`GET /rework-orders`、`GET /rework-orders/{id}`）与其余 55 行，共 `3 + 2 + 55 = 60` 个具体 `(method, path)` 端点）。改动记录见 `audits/stage1-audit.md` P0-1。
 
 ### 2.1 认证与账号（`UC-01`，12 个）
 
@@ -100,8 +100,8 @@
 | `GET` | `/facility-assets` | 全部 | `?lighting_point_id=&asset_type=&importance=` |
 | `POST` | `/facility-assets` | ADMIN | — |
 | `PATCH` | `/facility-assets/{id}` | ADMIN | — |
-| `GET` | `/business-rules` | ADMIN | `?rule_code=&is_active=` |
-| `POST` | `/business-rules` | ADMIN | **创建新版本**：同 `rule_code` 已有活跃版本 → 旧版自动 `is_active=false`、`version+1`、同事务 |
+| `GET` | `/business-rules` | ADMIN | `?rule_code=&is_active=`。**合法 `rule_code` 共 5 个**：`grading_rules` / `sla_policy` / `dispatch_scoring_weights` / `rework_policy` / `ai_candidate_ttl_hours`（权威清单与载荷校验见 §7.4 与 `docs/DESIGN.md` §3.3（表结构见 §4.4 ⑤）） |
+| `POST` | `/business-rules` | ADMIN | **创建新版本**：Pydantic 结构化校验（非法 → `422 INVALID_RULE_PAYLOAD`）；同 `rule_code` 已有活跃版本 → 旧版自动 `is_active=false`、`version+1`、同事务 |
 | `PATCH` | `/business-rules/{id}` | ADMIN | 只能改 `is_active`/`description`。**禁止原地改 `rule_value`**（会破坏历史快照可解释性）→ `422 RULE_VALUE_IMMUTABLE`；要改载荷必须 `POST` 新版本 |
 
 ### 2.3 故障单与证据（`UC-03`/`UC-06`，14 个）
@@ -109,13 +109,13 @@
 | 方法 | 路径 | 允许角色 | 说明 |
 |---|---|---|---|
 | `POST` | `/tickets/ai-candidates` | INSPECTOR（区域 `INSPECT`） | `multipart/form-data`：`files`(1–10)、`lighting_point_id?`、`region_id?`、`scene_lighting_hint`（`auto`/`day`/`night`/`twilight`）。**处理顺序见 §5** |
-| `POST` | `/tickets` | INSPECTOR / ADMIN | **纯人工报障，永不依赖视觉**。支持 `application/json` **与** `multipart/form-data`（带 `files` 0–10，用于视觉失败兜底）→ `201`，`PENDING_DISPATCH`，同事务分级 |
+| `POST` | `/tickets` | INSPECTOR / ADMIN | **纯人工报障，永不依赖视觉**。支持 `application/json` **与** `multipart/form-data`（带 `files` 0–10，用于视觉失败兜底）→ `201`，`PENDING_DISPATCH`、`confirmed_at=created_at`，同事务按 `grading_rules` 分级并写入 `repair_deadline_at`（+48h；`response_deadline_at` 默认 `null`） |
 | `GET` | `/tickets` | 全部（按角色与区域过滤） | `?status=&priority=&region_id=&lighting_point_id=&reporter_account_id=&technician_account_id=&is_sla_overdue=&keyword=&created_from=&created_to=` |
 | `GET` | `/tickets/{id}` | 全部（区域校验） | 票 + `evidences[]` + `dispatches[]` + `repair_processes[]` + `acceptances[]` + `rework_orders[]` + `timeline[]` |
 | `PATCH` | `/tickets/{id}` | INSPECTOR（报障人，仅 `AI_CANDIDATE_PENDING`）/ ADMIN | 可改 `title`/`description`/`fault_type`/`facility_asset_id`。**改 `fault_type` 为 `FLICKERING`/`ELECTRIC_HAZARD` 必须带 `manual_note`** |
-| `POST` | `/tickets/{id}/confirm` | INSPECTOR（区域 `INSPECT`） | `{fault_type?, priority_override?, manual_note?}` → `PENDING_DISPATCH` + 分级 + 两个 SLA deadline |
+| `POST` | `/tickets/{id}/confirm` | INSPECTOR（区域 `INSPECT`） | `{fault_type?, priority_override?, manual_note?}` → `PENDING_DISPATCH` + 按 `grading_rules` 分级 + `repair_deadline_at`（确认起 +48h；`response_deadline_at` 默认 `null`） |
 | `POST` | `/tickets/{id}/cancel` | INSPECTOR（本人报障）/ ADMIN | `{cancel_reason}`（必填）。**仅 `AI_CANDIDATE_PENDING`/`PENDING_DISPATCH` 可撤**；`REWORK_PENDING_DISPATCH` 走 `/review-resolve` |
-| `POST` | `/tickets/{id}/regrade` | ADMIN | `{priority, reason}` → 重算 deadline + 审计 |
+| `POST` | `/tickets/{id}/regrade` | ADMIN | `{priority, reason}` → 更新 `priority` + 审计（**法定 48h `repair_deadline_at` 不因改级顺延**） |
 | `GET` | `/tickets/{id}/evidences` | 全部（区域校验） | 含 `url` 与 `ai_result_json` |
 | `POST` | `/tickets/{id}/evidences` | TECHNICIAN（受派人）/ INSPECTOR | `multipart/form-data`：`files`(1–10)、`evidence_type` |
 | `GET` | `/evidence/{id}/raw` | 全部（区域校验） | 原图二进制流 |
@@ -133,7 +133,7 @@
 | `POST` | `/dispatches/{id}/reject` | TECHNICIAN（本人） | `{reject_reason}`（必填）→ 票回 `PENDING_DISPATCH`；`dispatch_reject_count += 1` |
 | `POST` | `/dispatches/{id}/escalate` | TECHNICIAN（本人） | `{escalate_reason}`（必填）→ 票 → `MANUAL_REVIEW` |
 | `POST` | `/dispatches/{id}/complete` | TECHNICIAN（本人） | 维修完工提交（含电气安全检查六件套，见 §7.3） |
-| `GET`/`PATCH` | `/repair-processes`、`/repair-processes/{id}` | ADMIN / 本人 | `PATCH` **仅在票为 `IN_REPAIR` 时可改**；`materials` 覆盖式（传全量列表，服务层 diff） |
+| `GET`/`PATCH` | `/repair-processes`、`/repair-processes/{id}` | ADMIN / 本人 | **L136 行对应 3 个端点（`GET /repair-processes`、`GET /repair-processes/{id}`、`PATCH /repair-processes/{id}`，无 `PATCH /repair-processes`），加 L145 行 2 个（`GET /rework-orders`、`GET /rework-orders/{id}`）与其余 55 行，共 `3 + 2 + 55 = 60` 个具体 `(method, path)` 端点**；`PATCH` **仅在票为 `IN_REPAIR` 时可改**；`materials` 覆盖式（传全量列表，服务层 diff） |
 | `GET` | `/material-usages` | ADMIN / 本人 | — |
 
 ### 2.5 验收/返修/复核/通知/审计（`UC-07`/`UC-08`/`UC-09`，11 个）
@@ -188,7 +188,7 @@
 | `422` | `TECHNICIAN_OVERLOADED` | 被指派维修员在途超限 |
 | `422` | `POINT_HAS_ACTIVE_TICKET` | 改点位区域时存在活跃单 |
 | `422` | `RULE_VALUE_IMMUTABLE` | 试图原地改 `business_rules.rule_value` |
-| `422` | `INVALID_RULE_PAYLOAD` | 规则载荷语义校验失败（权重和 ≠ 1、阈值非递减等） |
+| `422` | `INVALID_RULE_PAYLOAD` | 规则载荷语义校验失败（`grading_rules` 缺 `default_priority=='P4'` / 条件枚举非法、`sla_policy.statutory_deadline_hours <= 0`、`dispatch_scoring_weights` 权重和 ≠ 1 等） |
 | `422` | `IDEMPOTENCY_PAYLOAD_MISMATCH` | 同键不同载荷 |
 | `422` | `VALIDATION_ERROR` | Pydantic 校验失败（`details.errors`） |
 
@@ -294,6 +294,8 @@
 12. 幂等键落 audit_logs
 ```
 
+> **正常亮灯参照回传（`D-30` 定案）**：视觉检出的夜间正常亮灯 `streetlight_on` 按 `D-30` 定案以 `is_fault_candidate=false` 随 `ai_result_json` 回传前端供巡查员参照；若图中仅有 `streetlight_on` 而无任何 `is_fault_candidate=true`，同样走第 10 步 `200 + {ticket: null, evidences: [...]}` 留证不建票（详见 `docs/DESIGN.md` §5.1）。
+
 ### 5.1 **五步错误码的优先级**（Leads's mandated order）
 
 | 顺序 | 判定 | 错误码 |
@@ -308,14 +310,14 @@
 
 ### 5.2 零候选为什么仍落库（`ticket_id = NULL` 的唯一合法用途）
 
-第 10 步是刻意的：**白天拍到「灭灯」不是故障**（`DAYTIME_UNPOWERED_EXPECTED`）。若无候选却强行建票，`uq_fault_tickets_active_point_type` 会把这张「非故障票」**锁住点位 72 小时**。
+第 10 步是刻意的：**白天拍到「灭灯」不是故障**（`DAYTIME_UNPOWERED_EXPECTED`），**夜间检出的正常亮灯 `streetlight_on`（按 `D-30` 定案置 `is_fault_candidate=false` 随 `ai_result_json` 回传前端供巡查员参照）同样不是故障**；若图中仅有 `streetlight_on` 而无任何 `is_fault_candidate=true`，同样走第 10 步 `200 + {ticket: null, evidences: [...]}` 留证不建票。若无故障候选却强行建票，`uq_fault_tickets_active_point_type` 会把这张「非故障票」**锁住点位 72 小时**。
 
 **但必须写 `fault_evidences` 而非全丢弃**，理由三条：
 1. 巡查员事后申辩「我明明拍到了」时，能拿出当时的图 + 当时的 AI 判定（`ai_result_json`）；
 2. 「白天灭灯不误报」这条红线要能**在 DB 侧断点**（`tester` 用例断言「`fault_tickets` 0 行 + `fault_evidences` 有行 + 点位未被锁」）；
 3. 若全丢弃，就没有任何记录能证明系统「看到了但正确抑制」，**红线变成不可验证的口头承诺**。
 
-**代价**：`fault_evidences.ticket_id` 必须可空（见 `docs/SCHEMA.md` §4.2 的 `ck_fault_evidences_ticket_or_orphan_inspection`）。
+**代价**：`fault_evidences.ticket_id` 必须可空（见 `docs/DESIGN.md` §4.3 的 `ck_fault_evidences_ticket_or_orphan_inspection`）。
 
 ---
 
@@ -341,6 +343,8 @@
 | 4 | 同键 + **不同载荷** | `422 IDEMPOTENCY_PAYLOAD_MISMATCH` |
 | 5 | 同键 + 原请求**仍在处理中** | `409 IDEMPOTENCY_REQUEST_IN_PROGRESS` |
 
+> **并发同键控制与严格 append-only 机制（P1-4 同步定案）**：**绝不向 `audit_logs` 插入占位行或做两阶段 `UPDATE`**。并发同键控制采用 **PostgreSQL 事务级非阻塞咨询锁 `pg_try_advisory_xact_lock(hashtextextended(actor_account_id::text || ':' || method || ':' || path || ':' || idempotency_key, 0))` + 锁内查询 `audit_logs` + `audit_logs` 严格 append-only**：请求进入事务后先尝试获取对应 `(actor_account_id, method, path, idempotency_key)` 的事务级非阻塞咨询锁，锁争用（返回 `false`）立即返回 `409 IDEMPOTENCY_REQUEST_IN_PROGRESS`；持锁后在锁内查询 `audit_logs`（命中 `2xx` 且同载荷则原样重放、不同载荷则 `422`）；仅业务执行成功返回 `2xx` 时向 `audit_logs` 写入 1 行幂等记录，`4xx`/`5xx` 不写幂等行且事务结束（提交或回滚）自动释放锁（详见 `docs/DESIGN.md` §3.5）。
+
 ### 6.3 两处**项目自定义选择**（草案留白，必须标注）
 
 #### (a) `X-Idempotent-Replay: true` 是**项目扩展，非 IETF 草案内容**
@@ -353,7 +357,7 @@ IETF 127 HTTPAPI WG 材料明写：*"#46 replay indicator: not proposed. Its mai
 
 #### (b) 失败的请求（4xx/5xx）**不占用**幂等键
 
-草案 §2.6 把「错误是否算 completed」列为**开放问题**（*"Open: do errors count as 'completed'? Practice differs; #48 suggests a retry after a 4xx is processed as new"*）。本项目选择：**只有 `2xx` 写 `audit_logs` 幂等键索引**（`uq_audit_logs_idempotency` 带 `WHERE response_status BETWEEN 200 AND 299`）。
+IETF 127 HTTPAPI WG 幻灯片（slides-127-httpapi-the-idempotency-key-http-header-field-00）把「错误是否算 completed」列为**开放问题**（*"Open: do errors count as 'completed'? Practice differs; #48 suggests a retry after a 4xx is processed as new"*；出处：`https://datatracker.ietf.org/meeting/127/materials/slides-127-httpapi-the-idempotency-key-http-header-field-00`）。本项目选择：**只有 `2xx` 写 `audit_logs` 幂等键索引**（`uq_audit_logs_idempotency` 带 `WHERE response_status BETWEEN 200 AND 299`）。
 
 **后果（期望行为）**：用户遇到 `409 DUPLICATE_ACTIVE_TICKET` 后修正重提**不会被判 payload mismatch**。
 
@@ -372,7 +376,7 @@ POST /dispatches/{id}/reject     POST /dispatches/{id}/complete
 
 ### 6.5 并发语义的诚实边界
 
-两个**真正并发**（都还没完成）的同键请求，结果取决于谁先提交。**确定性不变量只有两条**：
+两个**真正并发**（都还没完成）的同键请求下，服务端采用 **PostgreSQL 事务级非阻塞咨询锁 `pg_try_advisory_xact_lock(hashtextextended(actor_account_id::text || ':' || method || ':' || path || ':' || idempotency_key, 0))` + 锁内查询 `audit_logs` + `audit_logs` 严格 append-only**：先持锁者进入锁内查库并执行业务（仅 `2xx` 写入 1 行 `audit_logs`，`4xx`/`5xx` 不写幂等行且事务结束自动释放锁），后到达者在锁争用下立即返回 `409 IDEMPOTENCY_REQUEST_IN_PROGRESS`（或待前者提交释放锁后再入锁查询 `audit_logs` 原样重放 `2xx`；详见 `docs/DESIGN.md` §3.5）。结果取决于谁先持锁提交，**确定性不变量只有两条**：
 1. `fault_tickets` 精确 **`+1`** 行；
 2. `audit_logs` 中该幂等键精确 **`1`** 行。
 
@@ -387,7 +391,7 @@ POST /dispatches/{id}/reject     POST /dispatches/{id}/complete
 | ❌ 错误写法 | ✅ 正确写法 | 后果 |
 |---|---|---|
 | `pole_id` | **`lighting_point_id`** | 全库无 `pole_id` |
-| `sla_deadline` | **`response_deadline_at`** + **`repair_deadline_at`**（未接单时后者为 `null`） | 两个 deadline 语义不同 |
+| `sla_deadline` | **`repair_deadline_at`**（确认/发现起 +48h，不因未接单或改级为 `null`）+ 可空 **`response_deadline_at`**（默认 `null`，郑州规章无分钟级响应时限） | 两个 deadline 语义不同 |
 | `max_rework_count` | **`rework_policy.max_rework_rounds`** | 规则键名 |
 | `acceptance_records.result = 'passed'` | **`acceptance_records.decision`** ∈ `APPROVED`/`REJECTED` | 列名与取值都不同 |
 | `INVALID_STATE_TRANSITION` 作 `409` | **`422`** | 状态机冲突是语义问题 |
@@ -414,6 +418,60 @@ POST /dispatches/{id}/reject     POST /dispatches/{id}/complete
 
 > **`missing_items` 必须收集全部缺失项**：只报第一个会让用户改一次提一次，体验与可审计性都差。DB 层绕过服务层时必须抛 `CheckViolation` 且 `constraint_name == 'ck_repair_processes_safety_checklist_complete'`。
 
+### 7.4 `/business-rules` 载荷契约示例（`grading_rules` 与 `sla_policy`）
+
+`POST /business-rules` 创建新版本，请求体为 `{ "rule_code": ..., "rule_value": ..., "description": ... }`（非法载荷返回 `422 INVALID_RULE_PAYLOAD`；废除旧版 `grading_weights` / `priority_thresholds` 浮点魔数）：
+
+```jsonc
+// 1) rule_code = "grading_rules"（确定性表驱动分级，高到低首个命中，P4 必兜底）
+{
+  "rule_code": "grading_rules",
+  "rule_value": {
+    "rules": [
+      {
+        "rule_id": "R1_SAFETY_OR_EXPRESS_CRITICAL",
+        "priority": "P1",
+        "any": [
+          { "fault_type": "ELECTRIC_HAZARD" },
+          { "safety_flag": true },
+          { "road_level": "EXPRESS", "asset_importance_in": ["CRITICAL", "HIGH"] }
+        ]
+      },
+      {
+        "rule_id": "R2_EXPRESS_OR_MAIN_CORE_OR_CRITICAL_ASSET",
+        "priority": "P2",
+        "any": [
+          { "road_level": "EXPRESS" },
+          { "road_level": "MAIN", "fault_type_in": ["FIXTURE_DAMAGED", "LAMP_OUT"] },
+          { "asset_importance_in": ["CRITICAL", "HIGH"] }
+        ]
+      },
+      {
+        "rule_id": "R3_BRANCH_OR_MAIN_MINOR",
+        "priority": "P3",
+        "any": [
+          { "road_level": "BRANCH", "fault_type_in": ["LAMP_OUT", "OCCLUDED", "FLICKERING", "FIXTURE_DAMAGED"] },
+          { "road_level": "MAIN", "fault_type_in": ["OCCLUDED", "FLICKERING", "OTHER"] }
+        ]
+      }
+    ],
+    "default_priority": "P4",
+    "default_rule_id": "R4_FALLBACK_OBSERVATION"
+  }
+}
+
+// 2) rule_code = "sla_policy"（郑州市令第 152 号第 19 条第 3 款：48h 统一基线，不编造分钟数）
+{
+  "rule_code": "sla_policy",
+  "rule_value": {
+    "statutory_deadline_hours": 48,
+    "response_minutes": null,
+    "emergency_notice_hours": 24,
+    "applies_to_priorities": ["P1", "P2", "P3", "P4"]
+  }
+}
+```
+
 ---
 
 ## 8. `data-testid` 冻结锚点
@@ -432,17 +490,21 @@ POST /dispatches/{id}/reject     POST /dispatches/{id}/complete
 | 层 | 值 |
 |---|---:|
 | 源素材全文 `data-testid=` 真实属性写法 | 5 处 |
-| §10.2 冻结表去重后的名字 | **121** |
-| 路由表额外声明但未进冻结表 | **7** |
-| **并集** | **128** |
+| §8.2 / §8.3 冻结表去重后的名字 | 121 |
+| 路由表额外声明、**已由团队裁决补入冻结清单** | +7 |
+| **冻结总数（唯一口径）** | **128** |
 
-**7 个灰区（必须在阶段二开始前裁决是否补入冻结清单）**：`dashboard-summary-card-${key}`、`region-row-*`、`point-row-*`、`asset-row-*`、`rule-row-*`、`scope-row-*`、`account-row-*`。
+**7 个原灰区锚点已裁决补入**：`dashboard-summary-card-${key}`、`region-row-*`、`point-row-*`、`asset-row-*`、`rule-row-*`、`scope-row-*`、`account-row-*`。
 
-> 这 7 个只在 `frontend-dev` §3.1 路由表出现，**从未进入 §10.2 冻结清单**。而冻结声明说「`tester` 依 §10.2 写剧本」——**这 7 个等于未冻结**。已列入 §10 待裁决。
+> ✅ **裁决记录（`task-26`，2026-11-24）**：用户对 `docs/DECISION.md` `D-04` 的答复是「这里和我没有关系，是你们团队内部的事情」——**授权团队自决**。团队裁定**采纳 (a)：补入冻结清单，`121 → 128`**。
+>
+> **理由**：这 7 个是**列表行 / 汇总卡片**锚点，恰恰是 E2E 最需要断言的元素（「列表渲染了 N 行」「卡片显示了汇总值」）。排除它们等于让最关键的可视化断言失去锚点。
+>
+> **后果**：`tester` 现在可依本节完整清单写剧本，**不再有「未冻结锚点」**。原「已列入 §10 待裁决」的悬空状态解除。
 
-### 8.3 分组清单（**121** 个已冻结，按职责）
+### 8.3 分组清单（**128** 个已冻结，按职责）
 
-> **为什么是 121 而不是 128**：本节列的是 **`§10.2` 冻结清单**的九组划分，九组之和 `7+17+5+26+12+8+24+19+3 = 121`（`audits/stage1-audit.md` P0-4 两路独立计数逐组吻合、全局零重复）。另有 **7 个灰区锚点未冻结**（见 `§8.2`），二者并集才是 `§0` 声明的 **128**。**两个数字都对，层级不同，不得混用。**
+> **`128 = 121 + 7` 的来源**：前九组之和 `7+17+5+26+12+8+24+19+3 = 121`（`audits/stage1-audit.md` P0-4 两路独立计数逐组吻合、全局零重复）；**第 J 组为 7 个原灰区锚点，已由团队裁决补入**（`D-04`，见 §8.2）。二者相加即 `§0` 声明的 **128**。**现行唯一冻结口径是 128，不得再引用 121 作为总数。**
 
 | 组 | 数量 | 代表锚点 |
 |---|---:|---|
@@ -455,6 +517,8 @@ POST /dispatches/{id}/reject     POST /dispatches/{id}/complete
 | G 维修 | 24 | `repair-safety-checkbox`、`repair-safety-item-*`（5 项） |
 | H 验收/返修/超时/审计 | 19 | `accept-*`、`escalation-*`、`audit-log-table`、`notification-retry-btn` |
 | I 兜底页 | 3 | `forbidden-page`、`not-found-page` |
+| **J 列表行与汇总卡片（原灰区，`D-04` 补入）** | **7** | `dashboard-summary-card-${key}`、`region-row-*`、`point-row-*`、`asset-row-*`、`rule-row-*`、`scope-row-*`、`account-row-*` |
+| **合计** | **128** | `7+17+5+26+12+8+24+19+3+7 = 128` |
 
 ### 8.4 ⚠️ Element Plus 的 `data-testid` 透传行为（**三类，必须逐组件判定**）
 
@@ -532,14 +596,14 @@ date-picker.tsx L57-79  render 返回 <CommonPicker {...props}>，未转发 attr
 |---|---|---|---|
 | 原生 `<input>`/`<textarea>`/`<button>`/`<a>`/`<div>` | ✅ | 元素本身 | 直接用 |
 | `el-alert` | ✅ | **根元素**（`error-banner` 挂 `data-code`/`data-http-status`） | 直接用 |
-| `el-input` / `el-autocomplete` / `el-button` | ✅ **A 类** | 内层原生控件 | 直接用，**不加 `.locator('input')`** |
-| `el-select` | ✅ **B 类** | 组件根 `div` | 需 `:teleported="false"` + 下钻 |
-| `el-option` | 🟡 **待复核**（`frontend-dev` 断言可透传，**未给任何出处**） | 未知 | 阶段二首验 |
+| `el-input` / `el-autocomplete` / `el-button` | ✅ **A 类** | 内层原生控件 | 直接用 `page.get_by_test_id("x").fill(...)`（JS `getByTestId`），**不加 `.locator('input')`** |
+| `el-select` | ✅ **B 类** | 组件根 `div` | 下钻 `.locator('input')`；下拉浮层经 Vue 原生 `<teleport>` 挂 `body` 时 `page.get_by_test_id(...)` 可整页穿透，仅父容器链式 `locator` 需 `:teleported="false"` |
+| `el-option` | 🟡 **源码已核单根 `<li>`，待 Chromium 首验** | `<li role="option">`（`2.14.8` `option.vue` 未设 `inheritAttrs: false`） | 阶段二首验真实浏览器下 `data-testid`/`data-eligible`/`data-reason` |
 | `el-checkbox` / `el-radio` | ✅ **B 类** | 根 `label` | 下钻；`frontend-dev` 仍选择原生 checkbox（**理由应改为「B 类需下钻」，非「属性丢失」**） |
 | `el-tooltip` / `el-popover` / `el-date-picker` / `el-time-picker` / `el-cascader` | ❌ **C 类，禁止** | **丢弃** | **外层包 `<div data-testid>`** |
 | `el-upload` | 🟡 **未验证** | 未知 | `frontend-dev` R2 的「内部 input 无法从外层命中」**仍属未核实断言** |
 
-> `el-option` 的 `disabled`/`data-eligible`/`data-reason`/`data-testid` 全依赖「属性透传到选项 DOM」这个**未被举证的假设**。阶段二首个前端任务必须先验证，否则 `dispatch-assignee-option-*` 的断言全部悬空。
+> `el-option` 的 **`element-plus@2.14.8` `option.vue` 源码已核实为单根 `<li role="option">`（未设 `inheritAttrs: false`），但 `disabled`/`data-eligible`/`data-reason`/`data-testid` 在真实 Chromium 下的交互落点仍待阶段二首个前端任务实测首验**；否则 `dispatch-assignee-option-*` 的断言仍无法最终闭环。
 
 
 ## 9. E2E 断言纪律（`tester` 可直接照抄）
@@ -577,35 +641,38 @@ SLA 超时测试**不得** `sleep` 到 deadline 之后。调用 `POST /sla/scan`
 
 | 原编号 | 事项 | `DECISION.md` | 状态 |
 |---|---|---|---|
-| `AC-1` | 7 个路由表 `data-testid` 是否补入冻结清单 | **`D-04`** | 🔴 待裁决 |
-| `AC-2` | `el-option` 属性透传是否成立 | **`D-20`** | 🟡 已知无出处，阶段二首验 |
-| `AC-3` | 单次上传张数：后端 `1..10` vs 前端按单图 | **`D-03`** | 🔴 待裁决 |
-| `AC-4` | `422 VALIDATION_ERROR` 是否进冻结码表 | **`D-19`** | 🟡 已暂定列入（错误码 **34**） |
-| `AC-5` | `413` 阈值 15 MiB | **`D-02`** | 🟡 已裁定（`P1-3`） |
+| `AC-1` | 7 个路由表 `data-testid` 是否补入冻结清单 | **`D-04`** | ✅ **已裁定：补入，`121 → 128`**（用户授权团队自决） |
+| `AC-2` | `el-option` 属性透传是否成立 | **`D-20`** | 🟢 工程定案（阶段二首验） |
+| `AC-3` | 单次上传张数：后端 `1..10` vs 前端按单图 | **`D-03`** | ✅ **已协调统一：全链路 `1..10`**（`frontend-dev` `task-30` 同步） |
+| `AC-4` | `422 VALIDATION_ERROR` 是否进冻结码表 | **`D-19`** | 🟢 工程定案（已列入，错误码 **34**） |
+| `AC-5` | `413` 阈值 15 MiB | **`D-02`** | ✅ **已裁定：15 MiB** |
 
-> **`AC-5` 已可裁决 → 15 MiB**：前端「取更严者」算法引用的 `.env.example` 值已从 10 改为 15（`dev-ops` `task-9`），故 `min(15, 15) = 15`。前端文案与 `before-upload` 阈值须改 **15 MiB / `15,728,640` B**。此项状态已转为「已裁定，仅剩前端实现待落地」。
+> **`AC-5` 已裁定 → 15 MiB**：前端「取更严者」算法引用的 `.env.example` 值已从 10 改为 15（`dev-ops` `task-9`），故 `min(15, 15) = 15`。前端文案与 `before-upload` 阈值须用 **15 MiB / `15,728,640` B**。**此项已是用户裁决结论**（`docs/DECISION.md` `D-02`：「确定 15MiB」），仅剩前端实现待落地。
+>
+> **`AC-1` 已裁定 → 128**：用户答复「是你们团队内部的事情」= 授权团队自决，团队采纳 (a)。详见 §8.2 裁决记录。**`§8.3` 的九组 121 是历史分组口径，现行冻结总数以 128 为准。**
+>
+> **`AC-3` 已协调统一 → `1..10`**：`API.md` 与 `vision/` 本就支持 `1..10`，Lead 已派 `frontend-dev`（`task-30`）同步前端设计为 `1..10`，不再上推用户。
 
 ---
 
 ## 11. 本文档的诚实边界
 
 **已确定的**：
-- **57** 个端点、**34** 个 `error.code` 的唯一映射（端点行数见 §2 各小节；错误码见 §3 表 34 行，两者均已按 `audits/stage1-audit.md` P0-1/P1-1 复算）。
+- **57** 条路由行（含 2 条合并行，展开为 60 个 `(method, path)` 端点，即 `3 + 2 + 55 = 60`）、**34** 个 `error.code` 的唯一映射（端点行数见 §2 各小节；错误码见 §3 表 34 行，两者均已按 `audits/stage1-audit.md` P0-1/P1-1 复算）。
 - 幂等五条规则 + 12 个必需端点 + 两处项目自定义选择（IETF 草案逐字引用）。
 - 媒体处理五步顺序与优先级（Lead 裁决）。
-- `el-input`/`el-checkbox` 的 `data-testid` 实际落点（**本文件用 3 条 `curl` + 源码逐行独立复核**）。
+- `el-input`/`el-checkbox`/`el-select` 等 20 个组件的 `data-testid` 实际落点（**§8.4.1 列出 `el-input` 相关的 2 条 `curl` + 源码逐行独立复核，§8.4.2/§8.5 附 20 个组件 jsdom 运行时落点实测与 `el-option` 源码单根 `<li role="option">` 核实**）。
+- `/business-rules` 的 `grading_rules` 与郑州 48h `sla_policy` 载荷契约（§7.4）。
 
 **没有确定的**：
 - **没有任何端点被实现过**。本文档全部是设计契约，**零行可运行代码**。
 - 所有端点的实际响应体**从未被真实调用验证**。
-- `el-option`/`el-select`/`el-upload` 的透传行为**仍待复核**（仅 `el-input`/`el-checkbox` 已核）。
-- §10 的 5 项待用户裁决。
+- `el-input`/`el-checkbox`/`el-select`（等 20 个组件）已完成源码与 jsdom 落点核实，`el-option` 已完成源码级单根 `<li role="option">` 核实；真实 Chromium 下的 `fill()`/`check()`/`<teleport>` 交互以及 `el-upload` 透传将在阶段二首验。
 
 **明确不属于本文档的**：
-- 状态机转移规则与算法 → `docs/BUSINESS-LOGIC.md`
-- 表结构与约束 → `docs/SCHEMA.md`
+- 系统架构与技术栈、4 套状态机、核心业务机制、17 张表 Schema 与约束、视觉管线与质量门禁 → `docs/DESIGN.md`
 - 需求编号与验收判据 → `docs/REQUIREMENTS.md`
-- 技术栈版本 → `docs/TECH-STACK.md`
+- 全项目裁决事项的唯一权威清单 → `docs/DECISION.md`
 - 部署与端口 → `docs/RUNBOOK.md`
 
 ---
@@ -617,3 +684,7 @@ SLA 超时测试**不得** `sleep` 到 deadline 之后。调用 `POST /sla/scan`
 | 2026-11-21 | 初版。45 端点 / 33 错误码 / 幂等 12 端点 / 媒体五步 / 128 冻结 testid；**独立复核推翻 `el-input` 落根 div 的断言** | `task-7` |
 | 2026-11-21 | **审计修正**：端点 45 → **57**（P0-1）、`§2.5` 标题 9 → **11**（P0-1）、`§8.3` 标题 128 → **121**（P0-4）、错误码 33 → **34**（P1-1，`VISION_INFERENCE_FAILED` 入表）、`AC-5` 统一 **15 MiB**（P1-3）。**设计内容零改动** | `audits/stage1-audit.md` |
 | 2026-11-21 | **改名**：`docs/API-CONTRACT.md` → `docs/API.md`（`task-18`）。标题 `# 接口契约（API-CONTRACT）` → `# 接口契约（API）`，自指写入域与全仓交叉引用同步更新。**设计内容零改动**：57 端点 / 34 `error.code` / 12 幂等 / 128 = 121 + 7 全部不变 | 用户要求「`API-CONTRACT.md` 改为 `API.md`」 |
+| 2026-11-24 | **用户裁决同步（`task-26` + `task-29`）**：① `D-04` 补入 7 个灰区锚点，§8.2/§8.3 冻结口径统一为 **128**（九组 121 + J 组 7）；② `D-03` 协调统一全链路 `1..10`；③ 新增 §7.4 `/business-rules` 确定性规则 `grading_rules` 与郑州 48h `sla_policy` 载荷契约；④ 同步 `POST /tickets/{id}/confirm`、`/regrade` 与 §7.1 `sla_deadline` 口径（`repair_deadline_at` 自确认起 +48h，不因改级顺延；`response_deadline_at` 默认 `null`）。**57 端点 / 34 `error.code` / 12 幂等不变** | `task-26` + `task-29` |
+| **2026-11-24** | **文档合并同步与 `D-30` 定案落盘（`task-44`）**：① 顶部状态更新为「阶段一定稿（待用户放行阶段二实现）」；② §5 / §5.2 同步 `D-30` 定案（`streetlight_on` 以 `is_fault_candidate=false` 随 `ai_result_json` 回传前端作参照；若仅检出 `streetlight_on` 而无任何 `is_fault_candidate=true`，仍走第 10 步 `200 + {ticket: null, evidences: [...]}` 留证不建票）；③ §2.2 / §5.2 / §11 原指向 `SCHEMA.md` / `BUSINESS-LOGIC.md` / `TECH-STACK.md` 的引用统一更新至 `docs/DESIGN.md` 对应章节。**57 端点 / 34 `error.code` / 12 幂等 / 128 `data-testid` 不变** | `task-44` |
+| 2026-11-24（task-52） | **终审收口修正（`task-52`）**：① §6.2/§6.5 同步 P1-4，明确采用 PostgreSQL 事务级非阻塞咨询锁 `pg_try_advisory_xact_lock(hashtextextended(actor_account_id::text \|\| ':' \|\| method \|\| ':' \|\| path \|\| ':' \|\| idempotency_key, 0))` + 锁内查询 `audit_logs` + `audit_logs` 严格 append-only（仅 `2xx` 写入 1 行，锁争用立即返回 `409 IDEMPOTENCY_REQUEST_IN_PROGRESS`，`4xx`/`5xx` 不写幂等行且事务结束自动释放锁，详见 `docs/DESIGN.md` §3.5）；② §8.5 将 `el-select` 浮层原误写标签更正为 Vue 原生 `<teleport>`（P2-4），并同步 `:606`（原 `:604`）`el-option` 源码已核单根 `<li>`、待 Chromium 首验口径以消除与 `:601` 矛盾（P2-5）；③ 修正 §0/§2.2/§8.2 章节指针（`docs/team/TEAM.md` §5.3、§6.4、§8.2/§8.3、`docs/DESIGN.md` §3.3 与 §4.4 ⑤，P2-6/P2-7）；④ §6.3 (b) 开放问题归因修正为 IETF 127 HTTPAPI WG 幻灯片 `slides-127-httpapi-the-idempotency-key-http-header-field-00`（P2-10）；⑤ §0 与 §2 补注 57 条路由行展开为 60 个 `(method, path)` 端点口径（P2-12）。**57 路由行（60 端点）/ 34 `error.code` / 12 幂等 / 128 `data-testid` 不变** | `task-52` |
+| 2026-11-24（task-58） | **P2-12 展开口径订正与咨询锁全称统一（`task-58`）**：① §0/§2/§11 及 L136/L689 将合并路由行展开口径精确订正为 **60 个 `(method, path)` 端点**，并在 §2（L71）与 L136 明示 L136 行对应 3 个端点（`GET /repair-processes`、`GET /repair-processes/{id}`、`PATCH /repair-processes/{id}`，无 `PATCH /repair-processes`）、L145 行 2 个（`GET /rework-orders`、`GET /rework-orders/{id}`）与其余 55 行共 `3 + 2 + 55 = 60` 个具体 `(method, path)` 端点；② §6.2/§6.5/§12 将咨询锁略写统一替换为与 `docs/DESIGN.md:742` 逐字一致的显式全称 `pg_try_advisory_xact_lock(hashtextextended(actor_account_id::text \|\| ':' \|\| method \|\| ':' \|\| path \|\| ':' \|\| idempotency_key, 0))`（表内竖线按 GFM 表格规范转义为 `\|\|`）。**57 路由行 / 34 `error.code` / 12 幂等 / 128 `data-testid` 不变** | `task-58` |

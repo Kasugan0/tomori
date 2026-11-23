@@ -1,6 +1,6 @@
 # 团队章程与协作方法论（TEAM）
 
-> 状态：阶段一定稿候选 —— 待用户审阅裁决（未定稿）
+> 状态：阶段一定稿（待用户放行阶段二实现）
 > **文档归属**：`docs-writer`｜**本文件写入域**：`docs/team/TEAM.md`
 > **读者**：全体 9 名成员（**开工前必读**）、`auditor`（21 项必查的判据来源）、`Lead`
 > **本文件的地位**：**团队阵容、写入域边界、协作机制、质量体系（反假绿）、提交协议、判据体系的唯一权威**。
@@ -16,7 +16,7 @@
 | [一、团队构成](#一团队构成) | 9 人阵容 / 三段式职责边界 / 单应用三角色架构 |
 | [二、写入域边界](#二写入域边界越界即事故) | 三条硬边界 / 写入域矩阵 / 零 git 写纪律 / 阶段一冻结纪律 / 冲突处理 |
 | [三、协作机制](#三协作机制) | 任务板是唯一协调机制 / 派活模板 7 项 / 汇报模板 4 项 / 域优先于可用性 / 退回原主 |
-| [四、质量体系：反假绿](#四质量体系反假绿本项目质量体系的核心) | 现象唯一定义 / 八形态 A–G + `no-op` / `F14` / 五层假象 / 24 张变异卡 |
+| [四、质量体系：反假绿](#四质量体系反假绿本项目质量体系的核心) | 现象唯一定义 / 八形态 A–G + `no-op` / `F14` / 五层假象 / 27 行（30 实验）变异卡 |
 | [五、判据体系](#五判据体系) | 坐标四级判据 / 证据强度排序 / 统计口径分层 / 零命中声明 / 检查脚本自证 |
 | [六、提交协议](#六提交协议git-keeper-独占) | 四道门 / 提交信息规范 / 逐文件暂存 / 红线资产 / 静态门禁 / 未规定事项 |
 | [七、文档域纪律](#七文档域纪律) | 坐标四级 / 三个边界声明 / 报告模板强制坐标 |
@@ -32,7 +32,7 @@
 | # | 成员 | 负责 | 明确不负责 | 写入域 |
 |---:|---|---|---|---|
 | — | **`Lead`** | 裁决、派单、跨域协调、最终判定 | 不直接写业务代码/文档 | 无（只读 + 派单） |
-| 1 | `docs-writer` | `docs/` 设计规格（除 `RUNBOOK.md`）、`.team/notes/research/`、`.team/notes/decisions/`、Serena Memories | 不写代码、不写 `RUNBOOK.md`、不做 git 写 | `docs/*.md`（除 RUNBOOK）、`.team/notes/research/`、`.team/notes/decisions/` |
+| 1 | `docs-writer` | `docs/` 5 文档体系中的 `DECISION.md`/`REQUIREMENTS.md`/`DESIGN.md`/`API.md` 与 `docs/team/`、`.team/notes/research/`、`.team/notes/decisions/`、Serena Memories | 不写代码、不写 `RUNBOOK.md`、不做 git 写 | `docs/{DECISION,REQUIREMENTS,DESIGN,API}.md`、`docs/team/`、`.team/notes/research/`、`.team/notes/decisions/` |
 | 2 | `auditor` | 九维度审计、P0 判据、结论分级 | 不修问题（只报）、不写设计文档 | `.team/notes/auditor/`、`audits/` |
 | 3 | `backend-dev` | `backend/app/`、`migrations/`、`tests/unit/`、`tests/integration/` | 不写 `docs/`、不动 `web/` | `backend/`、`migrations/`、`tests/{unit,integration}/`、`pyproject.toml` |
 | 4 | `vision-dev` | `vision/`、`tests/vision/`、数据集与权重 | 不碰业务 API、不碰前端 | `vision/`、`tests/vision/` |
@@ -42,6 +42,8 @@
 | 8 | `git-keeper` | **唯一 git 写权限持有者**、提交协议、静态门禁 | 不写业务代码/文档 | `.git/`、`.gitignore`、`.team/notes/git-keeper/`、`.team/commit-gate/` |
 
 > ⚠️ **`auditor` 21 项必查之一：团队阵容必须是「9 人 = Lead + 8（含 `vision-dev`）」。** 任何写「8 人（Lead + 7）」或漏掉 `vision-dev` 的表述都是遗留自其他项目的错误，必须改。
+>
+> ⚠️ **同时必须写明的边界（否则会被误读为人类团队规模）**：**这 9 个角色是 AI agent 的职责域划分，不代表人类开发团队规模。** 用户已明确「我们只有一个人」（`docs/DECISION.md` `D-07`）。角色划分的意义是界定**权限、写入域与汇报链**，不是人数统计。
 
 ## 1.2 三段式职责边界（**每一位成员都必须能回答**）
 
@@ -95,7 +97,7 @@
 | `dev-ops` | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
 | `git-keeper` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ |
 
-> **`docs/RUNBOOK.md` 只归 `dev-ops`**，`docs-writer` 对它是**只读**。这是唯一一个 `docs/` 下的例外。
+> **`docs/` 根下 5 文档体系写入域划分**：`docs-writer` 负责 `DECISION.md` / `REQUIREMENTS.md` / `DESIGN.md` / `API.md` 与 `docs/team/`；**`docs/RUNBOOK.md` 只归 `dev-ops` 独占**，`docs-writer` 对它是**只读**。这是唯一一个 `docs/` 下的例外。
 
 ## 2.3 零 git 写纪律
 
@@ -326,20 +328,21 @@ no-op（不是假绿，修法相反）
 
 **判据 17（重合掩盖）**：**「覆盖输入空间」和「覆盖守卫的作用」是两件事**——测「守卫 A 拦某类输入」时，必须用「**只被 A 拦、不被 B 拦**」的输入。
 
-## 4.6 本项目专属的变异卡（24 张）
+## 4.6 本项目专属的变异卡（27 行 / 30 实验）
 
-`tester` 已定稿 24 张变异卡：`MUT-01a/01b/02/03a/03b/04a/04b/04c/05/06a/06b/07a/07b/07c/08a/08b/08c/09/10/11/12/13/14/15`。
+`tester` 已在 `.team/notes/tester/stage1-test-matrix-input.md` §5.2.1 定稿 27 行变异卡片（含 `MUT-01b..e` 4 个 reason，共 **30** 个可执行实验）：`MUT-01a/01b..e/02/03a/03b/04a/04b/04c/05a/05b/06a/06b/07a/07b/07c/08a/08b/08c/09/10/11/12/13/14/15/16/17`。
 
 | 变异卡 | 抓的形态 | 说明 |
 |---|---|---|
-| `MUT-01b..e` | A 名字骗人 | 合并为一行（4 个 reason）→ 可执行实验 **24 行 + 3 额外 reason = 27** |
-| `MUT-03b` / `MUT-04c` | — | **改 DB 约束**，SHA256 恢复不适用 → 用 `\d+` DDL before/after diff 为空 |
-| `MUT-05` | — | `return computed_priority` → `return "P3"`，抓**硬编码等级** |
+| `MUT-01b..e` | A 名字骗人 | 合并为一行（4 个 reason）→ 可执行实验 **27 行 + 3 额外 reason = 30** |
+| `MUT-03b` / `MUT-04c` / `MUT-16` | — | **改 DB 约束**，SHA256 恢复不适用 → 用 `\d+` DDL before/after diff 为空 |
+| `MUT-05a` / `MUT-05b` | — | `MUT-05a` 抓 `return "P3"` 硬编码等级（144 组合真值表）；`MUT-05b` 抓 `grading_rules` 规则倒序与 `OR→AND` 算子错 |
 | `MUT-06a` | — | `create_rework(...)` → `None`，抓**单事务四件事**漏项 |
 | `MUT-09` | — | 允许 `IN_REPAIR → REWORK_PENDING_DISPATCH`，抓**损坏 `rework_count` 语义** |
 | `MUT-13` | — | NUMERIC precision，抓**浮点比较** |
-| `MUT-14` | — | TIMESTAMPTZ，抓**时区丢失** |
-| `MUT-15` | — | 删 `AND is_sla_overdue = false` 幂等守卫，抓**重复扫描** |
+| `MUT-14` | — | TIMESTAMPTZ，抓**时区丢失**（对齐 `repair_deadline_at`） |
+| `MUT-15` | — | 删 ② 法定 48h 维修养护分支的 `AND is_sla_overdue = false` 幂等守卫，抓**重复扫描** |
+| `MUT-17` | — | 守卫郑州 48h 基线：**`P4` 观察不免除 48h**，且 `repair_deadline_at` 必须自 `T_confirm`/`T_discover` 起算（不得改回 `T_accept`） |
 
 **每张变异卡必须产出 6 件证据**：
 
@@ -435,7 +438,7 @@ no-op（不是假绿，修法相反）
 | # | 门 | 判据 |
 |---:|---|---|
 | ① | **变异残余门** | 无未恢复的变异改动 |
-| ② | **并发 Git 进程与锁门** | `pgrep -af '(^|/)git([[:space:]]|$)'` 为空；`.git/index.lock` 不存在 |
+| ② | **并发 Git 进程与锁门** | `pgrep -af '(^\|/)git([[:space:]]\|$)'` 为空；`.git/index.lock` 不存在 |
 | ③ | **暂存区纯净门** | `git diff --cached --name-only` 必须 **0 行** |
 | ④ | **工具签名门** | `commit.gpgsign` 必须 `true`；`gpg.format` 必须 `ssh` |
 
@@ -494,11 +497,24 @@ web/node_modules/  web/dist/  .venv/
 
 > **为什么长命令禁止管道**：下游提前退出或等待 stdin 会导致**构建锁不释放**。实测事故形态：整条流水线被锁住，多份日志 0 字节，多个批次全部阻塞。**这条的后果不是「提交错了」（可回滚），而是「全员停摆」（时间损失不可逆）。**
 
-## 6.7 本协议**未规定**的事项（**不得编造**）
+## 6.7 分支与合并策略（**用户已裁决：`D-07`**）
 
-`COMMIT-PROTOCOL.md` 全文**无分支命名规范、无 rebase/merge/冲突解决策略**。
+原版 `COMMIT-PROTOCOL.md` 曾无分支与 rebase/merge 策略；该策略已由用户在 `docs/DECISION.md` **`D-07`** 裁定，并由 `git-keeper` 补齐写入 `.team/notes/git-keeper/COMMIT-PROTOCOL.md`（已含 §1.4 与 `R16 REBASE-only`，`rg -ni '分支|rebase|merge|冲突'` 命中 **25 行**，具体行数以 `.team/notes/git-keeper/COMMIT-PROTOCOL.md` 为准）：
 
-> **本协议未规定分支规范，由 `Lead` 另定。** 在 `Lead` 另行规定前，**不得**自行发明分支命名或 rebase 策略。见 `docs/DECISION.md` **`D-07`**。
+> 用户原话：「我们只有一个人。我们只用 REBASE。」
+
+**生效规则**：
+
+| 项 | 规则 |
+|---|---|
+| 仓库规模 | **单人仓库**（一个提交者） |
+| 合并方式 | **只用 `rebase`**；**禁止 `merge commit`**（不得在 `main` 上产生 merge 提交） |
+| 分支 | 可有短分支（如 `feat/<scope>-<desc>`），**唯一允许的合入方式**是 rebase 到 `main` 得到线性历史 |
+| 并行大改动 | 出现时再切短分支；无 PR 评审环节时**优先直接在 `main` 上直线推进** |
+
+> ✅ **`COMMIT-PROTOCOL.md` 已对齐**：`.team/notes/git-keeper/COMMIT-PROTOCOL.md` §1.4（分支拓扑与 REBASE-only 策略）及硬规则 `R16` 已与本节完全同步。
+>
+> ⚠️ **不要误解阵容**：本文档 §1.1 的 **9 个角色是 AI agent 的职责域划分**，**不代表人类开发团队规模**。用户已明确「我们只有一个人」——角色划分用于界定权限与写入域，不等于 9 个真人。
 
 ---
 
@@ -548,9 +564,9 @@ wc -l <目标文件>
 
 - **阶段一无任何应用代码运行**：`backend/`、`vision/`（应用代码）、`web/`、`tests/`、`migrations/` 目录**均不存在**。
   - ⚠️ 例外与边界：`vision/` 目录下现有 8 个**未经任何运行验证**的草稿 `.py` 文件（`task-15`/`task-16` 期间产生，未纳入任何门禁、未被执行）。它们不改变「零行应用代码被运行过」这一事实。
-- **24 张变异卡全部未执行**——它们是被设计出来的实验，不是已完成的证据。
-- `mypy`/`pyright` **未预装**，静态门禁中该项**从未运行**。
-- **纪律层与全部待裁决项见 `docs/DECISION.md`**（全项目唯一权威清单，共 40 条，按「是否阻塞阶段二」分四档）：
+- **27 行（30 个实验）变异卡全部未执行**——它们是被设计出来的实验，不是已完成的证据。
+- `mypy` 已工程定案（`D-08`：Phase 2 初期先报告不阻塞，存量清零后转硬门禁），目前**未预装**、静态门禁中该项**从未运行**。
+- **纪律层与全部裁决项见 `docs/DECISION.md`**（全项目唯一权威清单，共 40 条，按四档组织，现已全部收口为 `20 ✅ / 20 🟢`）：
 
 | 原编号 | 事项 | `DECISION.md` |
 |---|---|---|
@@ -559,14 +575,15 @@ wc -l <目标文件>
 | `TC-3` | 远端 GPU 接入参数（含显存规格 32G–48G） | **`D-01`**（`batch` 等下游初值另见 `D-27`） |
 | `TC-4` | `auditor` 结论是否需用户终审 | **不进 `DECISION.md`**——由 `docs/team/LEAD.md` §1.1（:35）的「审计结果」职责承接（三档：`通过` / `需复核` / `驳回` + 依据），**属团队内部流程** |
 
-> 注：`TC-4` 原错映射勘误记录已移入本文 [# 九、变更记录](#九变更记录)，详见 `docs/DECISION.md:593`。
+> 注：`TC-4` 原错映射勘误记录已移入本文 [# 九、变更记录](#九变更记录)，详见 `docs/DECISION.md` 附录 A。
 
 **明确不属于本文档的**：
 
-- 需求编号 → `docs/REQUIREMENTS.md`
-- 技术栈 → `docs/TECH-STACK.md`
+- 需求编号与验收判据 → `docs/REQUIREMENTS.md`
+- 系统架构、技术栈、状态机、核心机制、Schema 与视觉管线 → `docs/DESIGN.md`
+- 接口契约与 `data-testid` 锚点 → `docs/API.md`
 - 部署与端口 → `docs/RUNBOOK.md`（`dev-ops` 独占）
-- 所有待用户裁决事项的**唯一权威清单** → `docs/DECISION.md`
+- 全项目裁决事项的**唯一权威清单** → `docs/DECISION.md`（40 条已全部收口：`20 ✅ / 20 🟢`）
 
 ---
 
@@ -576,3 +593,5 @@ wc -l <目标文件>
 |---|---|---|
 | 2026-11-21 | **v2（`task-18`）**：由 `docs/TEAM-CHARTER.md`（原 `docs/` 根目录）合并入本文档，并吸收 `docs/team/` 下原有方法论文档的方法论部分。**删除原 `TEAM-CHARTER.md §0`「不得修改 `docs/team/` 一个字节」禁令**（其前提已被用户 2026-11-21 的授权更新：「之前 team/ 下的文档都来自别的项目，仅作为此项目启动时参考用，完全可以修改或者删除。」）。**清除全部异项目事实残留**（母本的服务端口、源码路径与内联测试模块、8 人阵容、编号式形态库、母本的台账与方法论文档名），**方法论精华全部保留**（7 项派活模板 / 4 项汇报模板 / A–G + `no-op` + `F14` / 坐标四级判据 / 证据强度排序 / 域优先于可用性 / 退回原主 / 唯一来源原则）。**阵容（9 人）、写入域矩阵、反假绿形态、提交协议内容零改动** | 用户要求「`TEAM-CHARTER.md` 移入 `docs/team`」+「检查是否与 team/ 下文档重复，有重复直接合并；team/ 下的旧文档可改可删」 |
 | 2026-11-21 | **勘误与位置修正（`task-1`）**：① 原初版 `# 八` 曾将 `TC-4` 错标为「`audits/stage1-audit.md` 是否进入版本库 → `D-09`」；现已纠正：原 `TEAM-CHARTER.md §8` 的 `TC-4` 实为「`auditor` 结论是否需用户终审」（属内部流程，由 `docs/team/LEAD.md:35` 承接，不进 `DECISION.md`），而 `D-09` 已于 `1439120` 入库为 🟢 已闭合（详细去重归因见 `docs/DECISION.md:593`，此处不再重复长文）。② 修正 `# 八` 映射表「本文档 `LEAD.md`」指代为 `docs/team/LEAD.md` §1.1（:35），并将本条勘误自 `# 八` 移入本节 | `audits/task19-incremental-backtick-audit.md` §7 + `.team/RESUME-PROGRESS.md` §四 #5–6 + 任务板 `task-1` |
+| 2026-11-24 | **用户最终指示同步（`task-26` + `task-29`）**：① §6.7 同步 `D-07` 单人仓库 `rebase-only` 规则并声明 §1.1 的 9 个角色仅指 AI 职责域划分；② §4.6 同步变异卡清单至 27 行/30 实验（`MUT-05` 升级为 `MUT-05a`/`MUT-05b`、补充 `MUT-16` 与 `D-11` 守卫 `MUT-17`、更新 `MUT-15` 测 ② 分支）；③ §6.1 ② 转义正则竖线修复表格列数 | `task-26` + `task-29` |
+| **2026-11-24** | **5 文档体系精简合并同步（`task-44`）**：① §1.1 / §2.2 / §8 明确 `docs/` 根下 5 文档体系（`docs-writer` 负责 `DECISION.md` / `REQUIREMENTS.md` / `DESIGN.md` / `API.md` 与 `docs/team/`，`dev-ops` 独占 `docs/RUNBOOK.md`）；② §8 将原 `docs/TECH-STACK.md` 指针更新为 `docs/DESIGN.md`，并同步 `DECISION.md` 40 条全收口口径（`20 ✅ / 20 🟢`） | `task-44` |

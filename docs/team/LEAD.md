@@ -178,7 +178,7 @@ Error: migration 1 was previously applied but has been modified
 
 **对策**：报任何测试数必须带**完整命令行**（含 target、feature、参数）及对应 commit/状态。
 
-> **本项目的应用**：`docs/API.md` §0 / `docs/SCHEMA.md` §0 的「统计口径分层声明」表就是这条纪律的产物——每个数字都连「分子 / 分母 / 排除项」三层一起写。
+> **本项目的应用**：`docs/API.md` §0 / `docs/DESIGN.md` §0 的「统计口径分层声明」表就是这条纪律的产物——每个数字都连「分子 / 分母 / 排除项」三层一起写。
 
 ## 4.2 零命中要问维度覆盖
 
@@ -188,7 +188,7 @@ Error: migration 1 was previously applied but has been modified
 
 **正确做法**：零命中时必须声明「我搜了什么模式、在什么范围、排除了什么」。**排除项就是维度缺口。**
 
-> **本项目的应用**：`docs/TECH-STACK.md` §7.1 的「Context7 双失效」声明、`N1`/`N2` 域外特性的零命中声明，都写明了搜索模式与排除项（例如「未扫 `uv.lock`，其只含 1 个 virtual package，无依赖可扫」）。
+> **本项目的应用**：`docs/DESIGN.md` §1.4 的「Context7 双失效」声明、`N1`/`N2` 域外特性的零命中声明，都写明了搜索模式与排除项（例如「未扫 `uv.lock`，其只含 1 个 virtual package，无依赖可扫」）。
 
 ## 4.3 口径必须分层
 
@@ -219,7 +219,7 @@ Error: migration 1 was previously applied but has been modified
 未运行：[什么没跑]
 ```
 
-> **本项目的应用**：`docs/` 六份设计文档全部带「诚实边界」三栏（已证实 / 未证实 / 未运行·未审计范围），`audits/stage1-audit.md` §14 亦同。
+> **本项目的应用**：`docs/` 根下设计文档（`DECISION.md`、`REQUIREMENTS.md`、`DESIGN.md`、`API.md`）及 `TEAM.md` 均带「诚实边界」三栏（已证实 / 未证实 / 未运行·未审计范围），`audits/stage1-audit.md` §14 亦同。
 
 ---
 
@@ -437,7 +437,7 @@ git --no-optional-locks status --porcelain
 | 1 | **越权：写文档** | Lead 直接写文件，绕开 `docs-writer` | 文件由 `docs-writer` 重写，Lead 只留裁决 |
 | 2-4 | **越权：跑符号级查询**（3 次） | 用 `rg` 代替 Serena 符号工具，漏掉间接引用 | 结论被 `auditor` 纠正；改走符号级通道 |
 | 5 | **越权：自己改代码修 bug** | 由 Lead 直接改实现 | 退回原主（`backend-dev` / `frontend-dev`） |
-| 6-7 | **工具通道发错**（2 次） | 该用工具调用却写进可见正文，误以为对方已收到 | 见 `docs/team/TEAM.md` §3.1「工具通道与可见正文分离」 |
+| 6-7 | **工具通道发错**（2 次） | 该用工具调用却写进可见正文，误以为对方已收到 | 见 `docs/team/TEAM.md` §3.2（派活模板第 7 项『工具通道』）与本文 §7.2（`send_message` 是工具调用，不是正文） |
 | 8 | **未建共享任务** | 只走点对点消息，未落任务板 | 见 §2.1 |
 
 **用户原话（#1–#5 合并批评）**：
@@ -452,3 +452,4 @@ git --no-optional-locks status --porcelain
 
 - **v1（母本）**：7 部分 + 2 附录，基于母本项目的实际行为记录。
 - **v2（2026-11-21，`task-18`）**：并入 `docs/team/` 后重写。**清除全部母本项目事实残留**（母本的服务端口号、Rust 源码路径与内联测试模块、crate 概念、母本的团队方法论文档名与台账文档名、具体提交哈希与 HEAD 哈希）。**方法论全部保留**：角色边界三段式、不越权边界、任务板唯一协调 + 三字段 + CAS、裁决四段模板、数字问出处 / 零命中问维度 / 口径分层 / 边界声明、5 节自我纠错、继任者 5 张检查清单、附录 B 7 次判据错误 + 共同形态 + 对策。**新增**：实例来源的诚实标注（母本案例 ≠ 本项目运行证据）、附录 C 越权与工具通道失误表、对 Python/TS 栈不适用 Rust 基线的显式提示。
+- **v2.1（2026-11-24，`task-44`）**：配合 `docs/` 5 文档体系精简合并，同步 `:181`（`docs/DESIGN.md` §0）、`:191`（`docs/DESIGN.md` §1.4）与 `:222` 指针，保持 `:35` 及前方行号完全不变。
