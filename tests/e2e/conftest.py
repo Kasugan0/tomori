@@ -36,7 +36,7 @@ from typing import Any
 
 import httpx
 import pytest
-from playwright.sync_api import Page
+from playwright.sync_api import Page, expect
 
 from tests.conftest import (
     _DEFAULT_ROLES,
@@ -446,10 +446,48 @@ def open_app(page: Page, frontend_url: str, path: str = "/login") -> None:
     page.goto(f"{frontend_url}{path}", wait_until="networkidle")
 
 
+# auditor `batch19` `P3-2`: `auth-username-input` 偶发 `30s` 渲染超时（vite 冷编译/资源抖动）。
+# 统一登录/登出入口加「visibility 等待 + 指数退避重试 + 失败落诊断快照」。
+_LOGIN_BACKOFF_SECONDS: tuple[float, ...] = (0.0, 2.0, 5.0)
+
+
+def _diagnose(page: Page, *, label: str) -> str:
+    """落最后截图 + URL/title，供 flake 诊断（与 `_artifact_capture` 同目录）。"""
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    shot = LOG_DIR / f"{label}-diag-{int(time.time())}.png"
+    import contextlib
+
+    with contextlib.suppress(Exception):  # 截图失败不能让诊断本身再失败
+        page.screenshot(path=str(shot), full_page=True)
+    url, title = "<unavailable>", "<unavailable>"
+    with contextlib.suppress(Exception):
+        url, title = page.url, page.title()
+    return f"url={url!r} title={title!r} screenshot={shot}"
+
+
 def login(page: Page, frontend_url: str, account_key: str) -> None:
-    """Log in through the real form using only frozen `data-testid` anchors."""
+    """Log in through the real form using only frozen `data-testid` anchors.
+
+    `auth-username-input` render flake（`P3-2`）：`expect().to_be_visible` 确认 +
+    `(0, 2, 5)s` 指数退避最多 3 次导航重试；仍失败则落截图与页面上下文后抛出。
+    """
     username, secret = DEMO_CREDENTIALS[account_key]
-    open_app(page, frontend_url, "/login")
+    last_exc: Exception | None = None
+    for _attempt, delay in enumerate(_LOGIN_BACKOFF_SECONDS, start=1):
+        if delay > 0:
+            page.wait_for_timeout(int(delay * 1000))
+        try:
+            open_app(page, frontend_url, "/login")
+            expect(page.get_by_test_id("auth-username-input")).to_be_visible(timeout=30_000)
+            break
+        except Exception as exc:  # noqa: BLE001 — 重试循环需捕获一切动作性失败
+            last_exc = exc
+    else:
+        raise AssertionError(
+            f"login({account_key}): auth-username-input 在 "
+            f"{len(_LOGIN_BACKOFF_SECONDS)} 次尝试后仍不可见 — "
+            f"{_diagnose(page, label='login-flake')}"
+        ) from last_exc
     page.get_by_test_id("auth-username-input").fill(username)
     page.get_by_test_id("auth-password-input").fill(secret)
     page.get_by_test_id("auth-login-submit").click()
@@ -457,7 +495,10 @@ def login(page: Page, frontend_url: str, account_key: str) -> None:
 
 
 def logout(page: Page) -> None:
-    page.get_by_test_id("auth-logout-btn").first.click()
+    """Log out via the frozen `auth-logout-btn`（桌面/移动双锚取第一个可见）。"""
+    btn = page.get_by_test_id("auth-logout-btn").first
+    expect(btn).to_be_visible(timeout=30_000)
+    btn.click()
     page.wait_for_function("() => window.location.pathname.startsWith('/login')", timeout=20_000)
 
 
