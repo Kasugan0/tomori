@@ -50,6 +50,9 @@ uploads/
 .team/
 .evidence-backup/
 .serena/memories/
+.serena/
+docs/team/
+audits/
 
 # Environment variables (keep .env.example tracked)
 .env
