@@ -44,17 +44,23 @@
 
 ---
 
-## 快速开始（仅本地数据库栈）
+## 快速开始（本地数据库栈 + 阶段二应用）
 
 ```bash
-./deploy/stack-guard.sh up      # 启动 PostgreSQL 容器并校验 tomori_dev / tomori_test 就绪
-./deploy/stack-guard.sh status  # 容器、数据库、端口占用、E2E 租约一览
+# 1. 拉起本地 PostgreSQL 17.12（127.0.0.1:25432）并校验 tomori_dev / tomori_test 就绪
+./deploy/stack-guard.sh up
+./deploy/stack-guard.sh status
+
+# 2. 同步 Python 依赖并执行 Alembic 异步迁移（需先按 .env.example 配置 .env）
+uv sync
+uv run alembic -c alembic.ini upgrade head
+
+# 3. 启动后端 FastAPI（127.0.0.1:18141）与前端 Vite SPA（127.0.0.1:15173）
+uv run uvicorn tomori.main:app --host 127.0.0.1 --port 18141
+pnpm --dir web dev
 ```
 
-上述两条命令**现在就能跑**，效果是把本地 PostgreSQL 17.12 拉起来（`127.0.0.1:25432`）。
-
-> ⚠️ **没有任何应用启动命令**。后端与前端尚未实现，本仓库**不提供**启动 Web 服务的命令；请不要按常规 FastAPI / Vue 项目惯例去猜命令行，试不通是预期结果，不是环境问题。
-> 完整的环境准备、端口分配与远端 GPU 训练流程见 [`docs/RUNBOOK.md`](docs/RUNBOOK.md)。
+> 完整的环境变量说明、静态/测试门禁（`uv run ruff check src tests`、`uv run ruff format --check src tests`、`uv run mypy src/tomori`、`uv run pytest tests/unit`、`pnpm --dir web typecheck`）、E2E 隔离端口与远端 GPU 训练流程见 [`docs/RUNBOOK.md`](docs/RUNBOOK.md)。
 
 ---
 
@@ -70,7 +76,7 @@
 
 **智能能力的边界**：只处理**静态巡查图片**；AI 产出的故障候选**必须经巡查员确认**才能进入派工，模型不得直接驱动业务。
 
-**已知边界**：`vision/` 下的 8 个 `.py` 文件是**未经运行验证的预研草稿**，未纳入阶段一交付，未被任何测试覆盖。本仓库不对其可用性作任何承诺。
+**已知边界**：阶段二已放行实施，原预研草稿已迁入 `src/tomori/vision/`（根级 `vision/` 仅留运行时 `weights/`、`reports/` 目录）；远端 RTX 4080 SUPER 全周期正式训练待放行后回填实测指标，自定义权重回传并经 `SHA256SUMS` 校验前，视觉模块按 `baseline_pretrained_opencv` 兜底运行（置信度受 DB `CHECK` 封顶 `0.65`）或于 `strict_custom` 模式下返回 `503 VISION_DISABLED`。
 
 ---
 
@@ -78,6 +84,6 @@
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
-| 阶段一 | 需求规格、系统设计（架构/状态机/机制/Schema/视觉）、API 契约、裁决清单、团队章程、运维手册 | ✅ 设计定稿（40 条裁决已收口，待放行阶段二） |
+| 阶段一 | 需求规格、系统设计（架构/状态机/机制/Schema/视觉）、API 契约、裁决清单、运维手册 | ✅ 设计定稿（`42eb94e` 签名落盘，40 条裁决全部收口） |
 | 阶段一审计 | 独立审计 6 项 P0 + 4 项 P1 | ✅ 全部修正并复核 |
-| 阶段二 | 后端 / 前端 / 视觉 / 测试实现，本地编排 | ⬜ 未开始（**等用户授权**） |
+| 阶段二 | `src/tomori/`（含 `vision/`）、`migrations/`（`0001..0004`）、`web/`、`tests/` 实现与 `docs/TRAIN.md` 方案定稿 | ✅ 已放行并实现落盘（远端全周期正式训练待放行执行） |

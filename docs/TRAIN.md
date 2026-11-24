@@ -1,9 +1,9 @@
-> 状态：阶段二训练技术手册（**模型训练方案、EDA 实测与源码参数定稿；远端正式训练耗时与 `mAP` 待实际训练完成后回填**）
+> 状态：阶段二训练技术手册（**`merged_v2` 定版数据集、EDA 实测、两处 ETL/EDA Bug 修复与源码参数定稿；远端正式训练耗时与 `mAP` 待实际训练完成后回填**）
 
 # 模型训练方案、数据集清洗与超参数设计（`TRAIN`）
 
 > **文档归属**：`docs-writer`｜**写入域**：`docs/TRAIN.md`
-> **依据与 `F14` 纪律**：本文所有配置、默认数值、数据集实测与算法细节均逐字核自项目源码（`src/tomori/vision/{dataset_prep,eda,trainer,config,mapping,metrics,client}.py`）、本地 `.venv` 锁定包 **`ultralytics==8.4.216`** 源码（`cfg/default.yaml`、`cfg/models/26/yolo26.yaml`、`engine/{exporter,model,trainer,validator}.py`、`models/yolo/detect/{train,val}.py`、`data/{augment,base,dataset}.py`、`utils/{autobatch,checks,loss,metrics,tal,torch_utils}.py`、`nn/modules/head.py`、`nn/tasks.py`）、`docs/DESIGN.md` §5.3、`dev-ops` `task-72` 远端实测日志（`.team/notes/dev-ops/logs/task72-*.log`）、只读 EDA 与基准实测记录（`.team/notes/vision-dev/dataset-eda-report.md`、`.team/notes/vision-dev/logs/research-1280-epochs500.md`、`.team/notes/vision-dev/logs/bench-1280-vs-1024.log`）、以及 `task-86` 头选择机制与契约核验日志（`.team/notes/vision-dev/logs/task86-{head-plumbing-full,probe-head-switch-proof,metrics-schema-sim}.log`）。**严禁虚构尚未跑出的正式训练耗时或 `mAP` 指标。**
+> **依据与 `F14` 纪律**：本文所有配置、默认数值、数据集实测与算法细节均逐字核自项目源码（`src/tomori/vision/{dataset_prep,eda,trainer,config,mapping,metrics,client}.py`）、本地 `.venv` 锁定包 **`ultralytics==8.4.216`** 源码（`cfg/default.yaml`、`cfg/models/26/yolo26.yaml`、`engine/{exporter,model,trainer,validator}.py`、`models/yolo/detect/{train,val}.py`、`data/{augment,base,dataset}.py`、`utils/{autobatch,checks,loss,metrics,tal,torch_utils}.py`、`nn/modules/head.py`、`nn/tasks.py`）、`docs/DESIGN.md` §5.3、`dev-ops` `task-72` 远端实测日志（`.team/notes/dev-ops/logs/task72-*.log`）、只读 EDA 与基准实测记录（`.team/notes/vision-dev/dataset-eda-report.md`、`.team/notes/vision-dev/logs/research-1280-epochs500.md`、`.team/notes/vision-dev/logs/bench-1280-vs-1024.log`）、`task-86` 头选择机制与契约核验日志（`.team/notes/vision-dev/logs/task86-{head-plumbing-full,probe-head-switch-proof,metrics-schema-sim}.log`）、以及 **`merged_v2` 定版与多源筛选实证**（`.team/notes/vision-dev/{merged-v2-vs-v1-report.md,dataset-eda-merged-v2.md,dataset-expansion-survey.md}`、`.team/notes/vision-dev/logs/{merged_v2_prep_manifest.json,dataset_eda_merged_v2.json,task91-rfmode-fix.log}`）。**严禁虚构尚未跑出的正式训练耗时或 `mAP` 指标。**
 
 ---
 
@@ -13,8 +13,9 @@
 |---|---|---|
 | **基座与规模** | `yolo26s.pt`（`20,422,725` B，`10,009,784` 参数 / `22.8 GFLOPs` @ 640；`1280` fused `86.0 GFLOPs`） | 远端 `RTX 4080 SUPER`（`32,231 MiB` 可用显存）训练绰绰有余，导出 ONNX 后可在本地 CPU 顺畅推理；禁止更大 `m/l/x` 或更弱 `n`（`D-06`） |
 | **端到端无 NMS 架构** | `YOLO26 Detect(end2end=True, reg_max=1)` + `E2ELoss` | 训练期双头协同（`one2many` 加速收敛 + `one2one` 端到端对齐），导出 `nms=False` 后直接输出 **`[1, 300, 6]`**，无需部署后处理 NMS |
-| **分辨率** | **`imgsz=1280`**（`2×640`，P3/8 `160×160`，与 81.86% `1280×720` 原图 1:1 零下采样，四端锁死） | D1 全量 `8,428` 图中 `81.86%`（`6,899` 张）为 `1280×720`、`86.64%` 宽 `>= 1280`，`24,502` 标注框中 `97.46%` 面积 `< 0.5%`、COCO Tiny（`<32²`）占 `57.58%`；`1280`（`40×32` 步长整除）相比 `640` 面积 `4×`、相比 `1024`（`0.8×` 丢弃 `36%` 像素）保留 `100%` 原生像素，将缩后 `<2 P3 格(<16px)` 极小目标占比从 `14.72%` 降至 `5.81%`（救回 `2,182` 个极小灯头）（`D-28`） |
-| **防泄漏切分** | `Union-Find` 按 `video_id` + `phash_cluster` + `content_sha256` 联合切分 `70%/15%/15%` | `D1` 为连续抽帧（仅 `10` 个独立 `video_id`，最大单组 `2,890` 帧）、`D7` 含 `3×` 预增强副本；必须整簇锁死同一 split 并做 9 项交集=0 硬守卫 |
+| **定版数据集（`merged_v2`）** | **`7` 源精筛入池**：`10,253` 张静态图 / **`25,797`** 框（`train/val/test = 7,347 / 1,453 / 1,453`） | 淘汰 `d7`（配电木杆）、`ext_civic_broken`（完好灭灯+水印）、`d5`（空标+视频）及 6 个错标/跨域公开集；三集稀有类全非零（`damaged 955/205/205`，`occluded 117/33/77`） |
+| **分辨率** | **`imgsz=1280`**（`2×640`，P3/8 `160×160`，四端锁死） | 定版 **`merged_v2`** `10,253` 图中 **`60.19%`（6,171 张）为 `1280×720`**、`64.18%` 宽 `>= 1280`，`25,797` 框中 `86.61%` 面积 `< 0.5%`、COCO Tiny（`<32²`）占 **`51.32%`**；`1280` 对 `1280×720` 众数图实现 `mode_letterbox_scale = 1.0` 零下采样，将全框发生下采样占比从 `72.67%` 压至 **`0.41%`**、`<2 P3 格(<16px)` 从 `1,300 (5.04%)` 降至 **`260 (1.01%)`**（`D-28`） |
+| **防泄漏切分** | `Union-Find` 按 `video_id` + `.rf.` 增广簇 + `phash_cluster` + `content_sha256` 联合切分 | `d1` 为连续抽帧（`10` 个独立 `video_id`，最大 `2,890` 帧）、`d4` 含 `1,446` 预增广副本全部锁入 `train`；**13 项**跨 split 防泄漏断言（含 `val_test_preaugmented_count`）全部 **`0`** |
 | **领域增广约束** | **`flipud=0.0`**、**`hsv_v <= 0.25`**、**`hsv_s <= 0.4`**、适度 `degrees=5.0` / `mosaic=0.8` | 路灯杆不会倒立在天空（禁上下翻转）；默认 `hsv_s=0.7`/`hsv_v=0.4` 会把夜间灭灯洗成亮灯或混淆环境光，必须收紧亮度与饱和度扰动 |
 
 ---
@@ -42,85 +43,115 @@
    - **从 `1024` 升级至 `1280` 的几何与官方基准依据**（详见 `.team/notes/vision-dev/logs/research-1280-epochs500.md` 与 `§2.2` 实测）：
      - **与 COCO `640` 的 `2×` 整数倍及 `stride=32` 对齐**：`1280 = 2 × 640 = 40 × 32`，严格满足 `BaseTrainer._setup_train` 调用 `check_imgsz(..., stride=32, max_dim=1)`（`utils/checks.py:230-294`）的 `stride=32` 整除要求；亦对齐 Ultralytics 官方小目标与高分辨率分块指南推荐档位（`2×640`；VisDrone 基准 `YOLO26s` 从 `imgsz=640` 升至 `1280` 提升 `+8.4 mAP`，且 Ultralytics Platform 标准高分上限即为 `1280`）。
      - **特征图密度与计算量**：P3/8 网格由 `128×128` 扩至 **`160×160`**（P4/16 `80×80`、P5/32 `40×40`），One-to-Many 总 Anchors 从 `21,504` 扩至 **`33,600`**（`1.5625×`），`yolo26s` fused 计算量由 `54.2 GFLOPs` 增至 **`86.0 GFLOPs`**（`nc=4`；`nc=3` 为 `54.147 → 86.020 GFLOPs`），同时导出侧 `end2end=True`（`nms=False`）输出维度 `[1, 300, 6]` 保持完全不变。
-     - **对 `81.86%` 原生 `1280×720` 图像实现 1:1 零下采样**：`LetterBox`（`data/augment.py:1795-1843`）与训练加载 `BaseDataset.load_image`（`data/base.py:348-358`）在 `imgsz=1280` 下缩放率 **`r = 1.0`**，直接跳过 `cv2.resize`、无双线性插值模糊，保留 **`100%`** 原图像素（方形输入上下各补 `280px` 灰边 `114` 至 `1280×1280`；验证期 `set_rectangle` 为 `736×1312`），彻底挽回旧 `1024` 方案（`r = 0.8` 缩至 `1024×576`）直接丢弃 **`36%`** 像素的细节损失。
+     - **对占 `60.19%`（`merged_v2`）的原生 `1280×720` 图像实现 1:1 零下采样**：`LetterBox`（`data/augment.py:1795-1843`）与训练加载 `BaseDataset.load_image`（`data/base.py:348-358`）在 `imgsz=1280` 下众数缩放率 `mode_letterbox_scale = 1.0`，直接跳过 `cv2.resize`、无双线性插值模糊，保留 **`100%`** 原生像素（方形输入上下各补 `280px` 灰边 `114` 至 `1280×1280`；验证期 `set_rectangle` 为 `736×1312`），彻底挽回旧 `1024` 方案（`0.8×` 缩至 `1024×576`）使全库 **`72.67%`** 的标注框发生下采样的细节损失。
 
 ---
 
-## 2. 数据集全景、EDA 定量实测与防泄漏清洗（`D-29` + `eda.py` + `dataset_prep.py`）
+## 2. 多源数据集构成、筛选裁决、EDA 实测与防泄漏清洗（`merged_v2`）
 
-### 2.1 `D-29` 定案与 `D1–D7` + 辅助源完整台账
+### 2.1 `D-29` 定案与多源数据集构成及筛选裁决（`merged_v2` 定版）
 
 > **✅ `D-29` 用户最终裁决**：「所有数据集不用考虑合规性，直接使用。这是我做着玩的项目，所有代码都只会在本机。不用管。」
-> 按此裁决，所有公开数据集均可直接用于阶段二远端 GPU 训练与本地研究；下表同时遵守 `F14` 如实保留各来源原始许可证元数据、已知质量缺陷与远端实盘现状（不虚构许可，也不虚构尚未拉通的数据）。
+> 按此裁决，所有公开数据集均可直接用于阶段二远端 GPU 训练与本地研究；同时严格遵守 **`F14` 事实纪律**：保留全部来源真实原始许可证元数据、逐一记录已入池、明确剔除及目检排雷淘汰的公开数据集。
+>
+> **快照更替声明（`merged_v1` → `merged_v2`）**：`vision-dev` `task-91` 试跑的 `merged_v1`（`10,822` 图 / `26,254` 框）存在 `.rf.` 短数字 stem 撞名误删（误缩 `d7`）与 `eda.py` 保留率 `>100%` 两处缺陷，已被判**不可作定版依据**；`task-101` 使用修复后引擎与 Lead 审定入池口径实跑产出 **`merged_v2`**（`/root/autodl-tmp/tomori/datasets/merged_v2/`），作为现行定版训练数据输入（`.team/notes/vision-dev/merged-v2-vs-v1-report.md`）。
 
-| 编号 | 来源 | 原始规模与标注结构 | 原始许可证元数据（`F14` 实测） | 远端实盘现状（`task72-*.log` + `eda.py`） | 训练角色与技术处置注意 |
-|---|---|---|---|---|---|
-| **D1** | `ngocleltt/lamp-state-detection`（HF） | **8,428** 张 JPG（`81.86%` `1280×720` / `13.36%` `854×480` / `4.78%` `1920×1080`）+ **8,428** 个 YOLO `.txt`（**24,502** 框）；原 `classes.txt` 为 `0: lamp_on, 1: lamp_off, 2: lamp_occluded`；含 `metadata.csv`（10 组 `video_id` / 帧序 / 坐标） | `cc-by-4.0`（保留署名） | **已全量拉盘并完成只读 EDA**：`/root/autodl-tmp/tomori/datasets/d1_lamp_state`（8,428 图 + 8,428 框文件全数可读，0 坏图，详见 `§2.2`） | **核心主训练集**（亮灭 + 遮挡检测框）。因含 `10` 组 `video_id` 连续抽帧，必须按 `video_id` 整组切分防泄漏；**破损类 0 个样本** |
-| **D2** | `WHU-USI3DV/WHU-Infra3D`（GitHub） | 5,449 张 `8192×4096` 全景图 / 175,021 个 2D 框（含 `Street Light` `label_id=2` 及中文状态/破损属性） | 仓库无 `LICENSE`、README 未声明 | 需填写仓库问卷获取网盘下载链接（非直链） | 全景图畸变大、尺寸 `8K×4K`，若引入须先做视角裁切与自定义 JSON→YOLO 转换（当前 `dataset_prep.py` 未内置全景裁切器） |
-| **D3** | Roboflow `jeong-yeonsu/streetlamppole` | 993 张图（仅 `Damaged` 单类检测框） | 页面未标注 License | 未认证直探 `HTTP 403`（Roboflow Universe 需浏览器或 API Key 下载） | 补充 `streetlight_damaged`（class `2`），无亮灭标注 |
-| **D4** | Roboflow `godspeed-yqpeo/damaged-lights` | 619 张图（实际仅 `Working` / `Not Working` 两类） | 页面未标注 License | 未认证直探 `HTTP 403`（同上） | 名字含 `damaged`，**实为亮灭 2 类**；`SOURCE_CLASS_ALIASES` 已映射 `working→0`、`not working→1` |
-| **D5** | `Team16Project/Street-Light-Dataset`（GitHub, `arXiv:2407.01117`） | EDA 实测共 **1,539** 张静态图 + **26** 个 `.mp4`（`Raw Dataset` 823 张 + 26 `.mp4` 含 `Flicker/` 与 `Working/` 混入视频；`Resized Dataset` 716 张全 `200×200`）；**0 个 YOLO `.txt` 框** | 仓库无 `LICENSE` | **已完整拉盘并完成只读 EDA**：`/root/autodl-tmp/tomori/datasets/d5_street_light`（`4.0 GiB`，`1,539` 图 + `26` `.mp4`） | **仅整图分类目录，无 YOLO 检测框**（不可直接送目标检测头）；且 `.mp4` 必须由 `dataset_prep.py` 跳过（红线 `N1`），`Raw` 高清图仅可人工补标后再接入 |
-| **D6** | `AnantRajput415/Nighttime-Street-Light-Functional-Audit-...` | 仓库仅含 HTML + 2 Notebook，外链 Google Drive 未核验 | 未声明 | 未拉取数据（无库内图像） | 仅作低照度增强（CLAHE+Gamma+Unsharp）与按路段防泄漏方法论参考 |
-| **D7** | Roboflow `poles-defect/damaged_pole` v2 | Train 2,400 / Valid 182 / Test 73（杆体缺陷检测框，含 **`3×` 预增强**及 `640×640` 拉伸） | 页面未标注 License | 未认证直探 `HTTP 403` / API `401 OAuthException`（需 Roboflow API Key） | 含 `3×` 预增强导致同一原图衍生 3 张高度相似图，**引入前必须经 64-bit pHash 去重聚簇**防跨 split 泄漏；`SOURCE_CLASS_ALIASES` 映射 `damaged_pole→2` |
-| **辅助** | `hotosm/streetlevel-poles` / COCO 2017 | `hotosm` 3.5K `pole`/`tower`；COCO 含 `traffic light` 无路灯 | `cc-by-sa-4.0` / `CC-BY-4.0`（图像归 Flickr ToU） | `yolo26s.pt` 已自带 COCO 预训练权重 | 只作杆体/预训练基座参考，不直接混入路灯故障类标签 |
+#### 1. ✅ 定版入池 7 源台账（`merged_v2`，输入 `17,594` 图 → 去重前 `28,398` 框 → 最终保留 `10,253` 图 / `25,797` 框）
 
-> **`D-18` 破损类（`FIXTURE_DAMAGED`）样本边界声明**：公开数据中 D1 经全量 EDA 实测含 **0 个破损类标注框**，D3/D7 需 Roboflow API Key 或浏览器下载且侧重杆体缺陷，D5 无检测框标注。因此若首轮远端训练仅基于 D1（加后续人工补标），破损类样本量远少于亮灭类——遵循 **`D-18` 定案**，阶段二不虚构/不承诺具体破损类检出率数字，交付与评估按真实落盘数据统计并优先补采/精标破损样本。
+| 来源标识 | 平台与项目 Slug / 许可元数据（`F14`） | 原始输入 → 保留图数 / 清单框数 | 预处理策略与业务定位（`merged_v2_prep_manifest.json`） |
+|---|---|---|---|
+| **`d1`** | HF `ngocleltt/lamp-state-detection`（`CC BY 4.0`） | `8,428` 图 / `24,502` 框 → **`7,607`** 图 / `24,502` 框（pHash 去重 `821`） | **核心主训练集 & 全网唯一 `OCCLUDED` 源**（`lamp_on 22,207` / `lamp_off 2,060` / `lamp_occluded 235`）；`10` 组 `video_id` 整组防泄漏切分，`0` 破损样本 |
+| **`d3`** | RF `jeong-yeonsu/streetlamppole/2`（`CC BY 4.0`） | `993` 图 / `1,242` 框 → **`927`** 图 / `1,241` 框（退化框丢 `1`，pHash 去重 `66`） | **街灯杆体损伤**：锈蚀/破损/贴纸小框（`Damaged→2`），属灯具本体，`416×416` 无预增广 |
+| **`d4`** | RF `godspeed-yqpeo/damaged-lights/1`（`CC BY 4.0`） | `1,673` 图 / `2,424` 框 → **`1,537`** 图 / `2,424` 框（pHash 去重 `136`，含 `1,446` 预增广） | 名字含 `damaged` 但实为亮灭：`Not Working→1`、`Working→0`（**与 D1 类序相反，已显式反转修正**）；设 `preaug=1, rfmode=phash`，`1,446` 张预增广副本全锁 `train`（`val/test` 仅 `87 / 0` 张无增广图） |
+| **`ext_pwd_s6`** | RF `pwd3606/s_6-enyl4/1`（NHAI，`CC BY 4.0`） | `3,841` 图 / `6,006` 框 → **`88`** 图 / `130` 框（DROP `5,876` 框 / `3,725` 空图，SHA `18` / pHash `10`） | **目检真破损灯头/缺灯头/折断灯臂**：YOLO 多边形转外接框 `DAMAGED-STREET-LIGHT→2`，其余 36 类道路缺陷显式 **`DROP`** |
+| **`ext_pwd_s1`** | RF `pwd3601/s_1-bcm7o/2`（NHAI，`CC BY 4.0`） | `1,164` 图 / `1,601` 框 → **`45`** 图 / `51` 框（DROP `1,550` 框 / `1,113` 空图，SHA `5` / pHash `1`） | **目检真破损路灯灯臂**：多边形转框 `DAMAGED-STREET-LIGHT→2`，其余 36 类 `DROP` 并与 `s6` 自动去重 |
+| **`ext_prj_n_8`** | RF `pot1/prj_n_8/5`（NHAI，`CC BY 4.0`） | `1,277` 图 / `1,567` 框 → **`21`** 图 / `21` 框（DROP `1,546` 框 / `1,256` 空图） | **目检真双臂断折/弯曲/缺灯头**：原生 5 列 bbox `DAMAGED-STREET-LIGHT→2`，其余 36 类 `DROP` |
+| **`ext_infras_broken`** | RF `cnn-maker/infras/4`（仅 `valid;test`，`CC BY 4.0`） | `218` 图 / `265` 框 → **`28`** 图 / `29` 框（DROP `236` 框 / `190` 空图） | **目检真碎裂灯罩/悬垂线缆/检修门破损**：仅取无 90°旋转/噪声的 `valid+test`，`broken-streetlamp→2`；正常 `streetlamp`/`manhole`/`signpost` 等 5 类 `DROP` |
 
-### 2.2 数据集定量分析（EDA 实测）
+> *注（未纳入 `merged_v2` 的已探测/待审源）*：远端留存 `ext_pwd_s9`（`prjn1/s_9-hqyqe/3`，`109` 框 / `102` 图，`dHash≤4` 约增 `+50–67` 独立受损场景）由 `dev-ops` `task-102` 保留未纳入本批；`D2`（`WHU-Infra3D` 5,449 张 8K 全景）需问卷网盘及全景视角重投影裁切、`pot1/prj_n_3/4` 与已入池 NHAI 同源重叠高，本轮均未纳入；COCO 2017 / `hotosm/streetlevel-poles` 仅作背景/预训练参考。
 
-> **只读工具与报告溯源**：只读探索性分析工具已落盘于 **`src/tomori/vision/eda.py`**（784 行，仅读取文件头信息与 YOLO `.txt` 标注，亮度指标采用固定 `seed=42` 内存解码抽样，不修改任何数据集文件）；完整统计报告存 **`.team/notes/vision-dev/dataset-eda-report.md`**（配套结构化摘要 `dataset_eda.json`），延迟与显存基准日志存 **`.team/notes/vision-dev/logs/bench-1280-vs-1024.log`**。
+#### 2. ❌ 明确剔除 3 源与 6 个目检排雷淘汰公开集（防污染/反误报红线）
 
-#### 1. D1 全量 8,428 张分辨率实测（只读头信息，非抽样）
+| 被淘汰数据集 | 来源与原始特征 | 明确剔除 / 淘汰原因（均经 API 或逐框画框目检证伪） |
+|---|---|---|
+| **`d7`（`poles-defect/damaged_pole/3`）** | Roboflow `Public Domain`；`2,948` 图 / `3,600` 框（88.6% 多边形，原 `merged_v1` 曾占 `1,450` 图） | **实为倒伏乡村配电木杆（`Broken Pole`），非市政灯具**：并入会把正常电线杆/非灯具杆误判为 `FIXTURE_DAMAGED`；遵循 `D-18` 不承诺破损检出率定案，宁缺毋滥彻底剔除 |
+| **`ext_civic_broken`（`tanikas-space/civic-issues-nq7sy/6`）** | Roboflow `CC BY 4.0`；`250` 图（入筛 `46` 图 / `55` 框），中位仅 `275×194` | **标注严重错误 + 水印**：9 图抽检约 **`5/9` 实为完好夜间灭灯（`LAMP_OUT`）**、含 **Alamy 商业水印**，且与 `ext_infras_broken` 重叠 `10/50` 图 |
+| **`d5`（`Team16Project/Street-Light-Dataset`）** | GitHub / `arXiv:2407.01117`；`1,539` 静态图（`Raw` 823 + `Resized` 716 个 `200×200`）+ `26` 个 `.mp4` | **0 个 YOLO `.txt` 框**（仅整图分类目录）+ 含视频；作 `dataset_prep.py` 红线 `N1` 对照守卫（全数跳过，0 张入训练池） |
+| **`yarchi/mgts`** | Roboflow `Public Domain`；`3,917` 图（`Broken` 421 / `street light` 310） | **目检排雷**：`Broken`/`Lose`/`Uncovered` 100% 实为**破损路面井盖**，`street light` 全为健康路灯 |
+| **`sankets-workspace-vpabr/civicdetection`** | Roboflow `CC BY 4.0`；`9,996` 图（`broken_streetlight` 589） | **目检排雷**：`broken_streetlight` 100% 实为**路面坑洞/排水沟/裂缝**，零路灯目标 |
+| **`akash-kumar-saurav/jannet-civic-issues`** | Roboflow `CC BY 4.0`；`9,067` 图（`broken_street_light` 398） | **目检排雷**：白天为完好未亮灯头、夜间主体为**完好灭灯（`LAMP_OUT`）**，且与 `D4/D5` 有 **285 张 SHA256 完全重复图** |
+| **`ctanxy/street-light-gwqbo`** | Roboflow `CC BY 4.0`；`2,729` 原图（v3 含 `7,121` 增广图） | **目检排雷**：标注框为 **`[0, 0, 1, 1]` 全图分类大框**且训练集含 **180° 上下颠倒增广**（直接触犯 `flipud=0.0` 红线） |
+| **`651413014-5uq33/broken-bulb-49hso`** | Roboflow `CC BY 4.0`；`588` 图（`bulb` 761 / `broke` 155） | **目检排雷**：全部为**室内家用 E27 LED 灯泡**，非户外道路照明 |
+| **`filter-wqrbt/damaged-lamp`** | Roboflow `CC BY 4.0`；`192` 图（`Lamp-Crack` 等） | **目检排雷**：源自 `Car-Damage-Type-Detection`，实为**汽车车灯裂痕** |
 
-全量 `8,428` 张图片读头成功（失败 `0` 张，视频 `0` 个），长宽比全部为 `1.78`（16:9），文件体积 min `53,458` B / median `183,242` B / mean `198,271.35` B / p95 `344,890.55` B / max `1,046,618` B：
+> *另备查大类排雷（`.team/notes/vision-dev/dataset-expansion-survey.md` §3.1–§3.3）*：`EPDCL/pd-defect` 等 7 个电力架空线水泥杆集、`Smartathon` 全系（`BAD_STREETLIGHT` 仅 `1–7` 框且含 `CC BY-NC-SA`）、`YDLD`（`CC BY-NC-ND 4.0` 禁止衍生且仅光源框）与 `geopagedev` 等纯健康杆体/井盖/路牌集均已核实排除。
+>
+> **`D-18` 与 `OCCLUDED` 公开源诚实边界**：
+> 1. **`OCCLUDED` 全网无第二个公开源**：遍查 Hugging Face、Roboflow Universe、Kaggle、GitHub、Zenodo、Figshare、Mendeley Data、IEEE DataPort 后确认，除 **`d1` 原始 `235` 框（`merged_v2` 保留 `227` 框）** 外全网再无公开路灯遮挡框集，后续只能依靠训练集枝叶透明通道合成遮挡与阶段二自采补齐；
+> 2. **`D-18` 破损类承诺边界**：主动剔除 `d7` 与 `ext_civic_broken` 后，`merged_v2` 净留 `1,365` 个高纯度 `streetlight_damaged` 框（占全库 `5.29%`），仍遵守 `D-18` 不在阶段二前置承诺具体破损检出率指标。
 
-| 分辨率 | 张数 | 占比 | 关键阈值统计 |
+### 2.2 数据集定量分析（`merged_v2` 定版 EDA 实测 + 修复后三口径对比）
+
+> **只读工具与报告溯源**：只读 EDA 工具已落盘于 **`src/tomori/vision/eda.py`**（928 行，只读图像头与真实宽高标注，亮度采用 `seed=42` 内存解码抽样，零文件写入）；定版实测报告与对比日志存 **`.team/notes/vision-dev/merged-v2-vs-v1-report.md`**、**`.team/notes/vision-dev/dataset-eda-merged-v2.md`**、**`.team/notes/vision-dev/logs/dataset_eda_merged_v2.json`** 与 **`.team/notes/vision-dev/logs/merged_v2_prep_manifest.json`**（早期 D1 单源基线见 `dataset-eda-report.md`）。
+
+#### 1. `merged_v2` vs `merged_v1` 量化演进与三集稀有类零断崖核查
+
+| 维度 | `merged_v1`（修复前旧快照，不可作定版） | **`merged_v2`（本轮定版）** | 变化与根因解析 |
 |---|---:|---:|---|
-| **`1280×720`** | **`6,899`** | **`81.86%`** | 与 `imgsz=1280` 实现 **1:1 零下采样**；宽 `>= 1280` 合计 **`86.64%`** |
-| `854×480` | `1,126` | `13.36%` | 唯一 `<= 1024` 档（占比 `13.36%`）；宽 min `854.0` / 高 min `480.0` |
-| `1920×1080` | `403` | `4.78%` | 高清 1080p 样本；宽 max `1920.0` / median `1280.0` / mean `1253.69` / p95 `1280.0` |
+| **总图数** | `10,822` | **`10,253`** | **`-569`（`-5.26%`）**：剔 `d7`(1,450)+`ext_civic`(46)=`-1,496`；`d4` 改 `rfmode=phash` 锁入 `train` 3× 副本（`612→1,537`, `+925`）；`ext_infras_broken` 恢复原重叠 `2` 张 |
+| **总框数（EDA 实读）** | `26,254` | **`25,797`** | **`-457`（`-1.74%`）**（注：ETL 去重前 7 源框和 `28,398`，图像去重 `1,057` 张后终落 `25,797` 框） |
+| **Split 图数 (`train / val / test`)** | `7,577 / 1,622 / 1,623` (`70.0/15.0/15.0%`) | **`7,347 / 1,453 / 1,453`** (`71.7% / 14.2% / 14.2%`) | `d4/train` `1,446` 预增广图严格锁死仅进 `train`（`val_test_preaugmented_count=0`），`val`/`test` 完全纯净且精确等分 |
+| **`streetlight_on`（框 / 图）** | `20,492` / `5,666` | **`21,133` / `6,102`** | `+641` 框（`d4/train` `Working` 副本并入 `train`） |
+| **`streetlight_off`（框 / 图）** | `2,374` / `1,590` | **`3,072` / `2,101`** | `+698` 框（`d4/train` `Not Working` 副本并入 `train`） |
+| **`streetlight_damaged`（框 / 图）** | `3,161` / `2,500` | **`1,365` / `1,010`** | **`-56.8%`（`-1,796` 框 / `-1,490` 图）**：**系主动剔除 `d7` 乡村配电木杆与 `ext_civic_broken` 错标夜间灭灯所致**，大幅提升破损类语义纯度 |
+| **`streetlight_occluded`（框 / 图）** | `227` / `205` | **`227` / `205`** | `0` 变化（100% 来自 `d1`，全网无第二公开源） |
 
-#### 2. D1 全量 24,502 标注框尺度实测
+**`merged_v2` 三集分源与稀有类覆盖（零断崖，三集全非零）**：
 
-`8,428` 个标注文件共含 **`24,502`** 个标注框（每图框数 min `0.0` / median `3.0` / mean `2.91` / p95 `7.0` / max `14.0`）：
+| Split | 总图数 | 总框数 | `streetlight_on` | `streetlight_off` | **`streetlight_damaged`** | **`streetlight_occluded`** | `damaged` 5 源覆盖 (`d3 / s6 / s1 / prj_n_8 / infras` 图数) |
+|---|---:|---:|---:|---:|---:|---:|---|
+| **`train`** | `7,347` | `21,585` | `18,546` | `1,967` | **`955`**（`70.0%`） | **`117`**（`51.5%`） | `582 / 61 / 35 / 12 / 18`（5 源全覆盖） |
+| **`val`** | `1,453` | `1,973` | `1,163` | `572` | **`205`**（`15.0%`） | **`33`**（`14.5%`） | `159 / 11 / 7 / 4 / 3`（5 源全覆盖） |
+| **`test`** | `1,453` | `2,239` | `1,424` | `533` | **`205`**（`15.0%`） | **`77`**（`33.9%`） | `186 / 16 / 3 / 5 / 7`（5 源全覆盖） |
+| **合计** | **`10,253`** | **`25,797`** | **`21,133`** | **`3,072`** | **`1,365`** | **`227`** | **`d4` 分布：`1,450 / 87 / 0`**（`preaug` 全锁 `train`） |
+
+> *如实备注 `d4` `rfmode=phash` 权重效应*：`d4/train` 的 `1,581` 图属 `527×3` 强增广（`±14° shear + hflip`），`pHash(d≤6)` 仅合并 `136` 张，使 `d4` 在 `train` 占 `1,450` 张（含 `1,446` 预增广图，相对 `stem` 约 `~2.8×` 样本权重）。因全部锁死在 `train`（`val_test_preaugmented_count = 0`），**绝无跨集泄漏风险**。
+
+#### 2. `merged_v2` 全量分辨率、EXIF、框尺度与昼夜分布
+
+- **全量分辨率与 EXIF 实测（`10,253` 张，读头失败 `0`，视频 `0`）**：**`100%` `EXIF=1`（`{'1': 10253}`）**；宽 min `261` / median `1,280` / mean `1,088.05` / p95 `1,280` / max `3,840`，高 min `396` / median `720` / mean `671.64` / p95 `720` / max `2,160`，长宽比 median `1.78`（mean `1.59`）：
+  - **众数分辨率 `1280×720`：`6,171` 张（`60.19%`）**；**宽度 `>= 1280`：`64.18%`**；宽度 `> 1024`：`64.53%`；宽度 `<= 1024`：`35.47%`；
+  - Top 分辨率构成：`1280×720` (`6,171`)、`640×640` (`1,565`，`d4` 占主导)、`854×480` (`1,111`)、`416×416` (`927`，`d3`)、`1920×1080` (`325`)、`3840×2160` (`31`)、`3840×1728` (`9`)。
+- **全量 `25,797` 标注框尺度（`10,253` 标签文件，每图框数 median `2.0` / mean `2.52` / max `14.0`）**：
 
 | 框几何维度 | min | median | mean | p95 | max | 相对面积 / COCO 尺度桶分布 |
 |---|---:|---:|---:|---:|---:|---|
-| **框宽 (px)** | `5.64` | **`30.51`** | `33.84` | `62.14` | `196.53` | 相对面积 **`< 0.1%` 占 `47.37%`**；**`< 0.5%` 占 `97.46%`**；`< 2%` 占 `99.99%` |
-| **框高 (px)** | `6.78` | **`29.01`** | `32.34` | `58.71` | `160.39` | COCO **Tiny (`<32²`)**：**`14,108`** 框（**`57.58%`**） |
-| **框面积 (px²)** | `86.18` | **`888.47`** | `1267.82` | `3581.03` | `31521.01` | COCO **Small (`32²..96²`)**：**`10,349`**｜**Medium**：**`45`**｜**Large：`0`** |
+| **框宽 (px)** | `4.99` | **`32.18`** | `41.89` | `100.00` | `629.13` | 相对面积 **`< 0.1%` 占 `39.95%`**；**`< 0.5%` 占 `86.61%`**；`< 2%` 占 `94.98%` |
+| **框高 (px)** | `6.78` | **`30.82`** | `39.44` | `83.79` | `681.02` | COCO **Tiny (`<32²`)**：**`13,238`**（`51.32%`）｜**Small (`32²..96²`)**：**`11,434`** |
+| **框面积 (px²)** | `83.85` | **`998.78`** | `2,638.08` | `8,093.43` | `378,225.39` | COCO **Medium (`<192²`)**：**`934`**｜**Large (`>=192²`)**：**`191`** |
 
-#### 3. 为什么选择 `1280`（旧 `1024` 方案 vs `imgsz=1280` 实测对比表）
+- **昼夜亮度（随机抽样 `2,000` 张，`seed=42`）**：`V` 均值 median `108.92`（min `15.23` / mean `106.28` / max `224.61`），场景分布为 **`day = 979` / `twilight = 627` / `night = 394`**，三类光照均有充分样本支撑 `§4` 光度约束。
 
-依据 `ultralytics==8.4.216` `Detect(P3, P4, P5)` 三层特征图步长与 `LetterBox` 几何规则，逐框映射 D1 全量 `24,502` 个标注框缩后像素尺度：
+#### 3. 为什么选择 `1280`（`merged_v2` 全 `25,797` 框 × 修复后三口径并列对比）
 
-| 对比指标 | 旧 `1024` 方案（`32×32`） | 现行 `imgsz=1280`（`2×640 = 40×32`） | 差异与物理影响 |
+针对旧版 `eda.py` 单一 `>100%` 口径缺陷（见 `§2.4` Bug 2），现严格以 **`mode_letterbox_scale`（众数分辨率缩放率）+ `letterbox_scale` / `native_pixels_kept`（全框均摊且物理封顶 `100%`）+ `downsampled_boxes_ratio`（下采样框占比）** 三口径并列对比：
+
+| 对比指标（`merged_v2` 全 `25,797` 框） | 旧 `1024` 方案（`32×32`） | 现行 `imgsz=1280`（`2×640 = 40×32`） | 差异与物理影响 |
 |---|---:|---:|---|
 | 相对 COCO `640` 倍数 | `1.6×` | **`2.0×`** | 面积相对 `640` 扩大 `4.0×`（旧方案 `2.56×`） |
 | `P3/8` / `P4/16` / `P5/32` 网格 | `128×128` / `64×64` / `32×32` | **`160×160`** / `80×80` / `40×40` | `P3/8` 空间分辨力提升 `1.5625×` |
-| One-to-Many 总 Anchors | `21,504` | **`33,600`** | `+12,096`（`+56.25%` 候选密集锚点） |
-| `yolo26s` fused GFLOPs（`nc=4` / `nc=3`） | `54.2` / `54.147` | **`86.0`** / `86.020` | 计算量约 `1.59×`，端到端输出仍为 **`[1, 300, 6]`** |
-| `1280×720` LetterBox 缩放率 `r` | `0.8` | **`1.0`** | 落图 `1024×576` vs **`1280×720`**（跳过 `cv2.resize`） |
-| 原图像素保留率 | `64.0%`（**丢弃 `36%` 像素**） | **`100.0%`**（**零下采样**） | 彻底保住高空远距灯头微弱亮斑与边框纹理 |
-| 缩后短边 `< 1 P3 格 (<8px)` | `84`（`0.34%`） | **`29`（`0.12%`）** | 亚步长极端小目标减少 `65.5%` |
-| 缩后短边 `< 2 P3 格 (<16px)` | **`3,606`（`14.72%`）** | **`1,424`（`5.81%`）** | **救回 `2,182` 个极小目标**（降幅 `-8.91 pct`） |
-| 缩后短边 `< 3 P3 格 (<24px)` | `14,038`（`57.29%`） | **`7,798`（`31.83%`）** | 高占比小框跨过 3 格 P3 感知门槛 |
-| 缩后 COCO Tiny（`<32×32 px²`） | `18,827`（`76.84%`） | **`14,108`（`57.58%`）** | 旧方案将 `4,719` 个 Small 目标压退化为 Tiny |
+| One-to-Many 总 Anchors | `21,504` | **`33,600`** | `+12,096`（`+56.25%` 候选密集锚点），`yolo26s` fused `54.2` vs `86.0 GFLOPs` |
+| **众数 `1280×720` 缩放率 (`mode_letterbox_scale`)** | `0.8` | **`1.0`** | 落图 `1024×576` vs **`1280×720`**（占 `60.19%` 的众数原图跳过 `cv2.resize`） |
+| **众数 `1280×720` 原生像素保留** | `64.0%`（丢 `36%`） | **`100.0%`（零下采样）** | 彻底保住主流 `1280×720` 街景灯头微弱亮斑与边缘 |
+| **全框平均缩放率 (`letterbox_scale`)** | `1.0002` | **`1.2503`** | 含 `640×640`/`416×416` 上采样图后的全框均值 |
+| **全框均摊原生像素保留率（封顶 `100%`）** | `73.7%`（`0.7369`） | **`99.7%`（`0.9973`）** | 按 `min(1.0, scale²)` 物理封顶，不再被上采样虚抬 `>100%` |
+| **全框发生下采样占比 (`downsampled_boxes_ratio`)** | **`72.67%`（`18,747` 框）** | **`0.41%`（`107` 框）** | `1024` 令近 3/4 框受损；`1280` 仅剩 4K 源中极少数框下采样 |
+| 缩后短边 `< 1 P3 格 (<8px)` | `45`（`0.17%`） | **`1`（`0.00%`）** | 亚步长极端小目标从 `45` 框压至 **`1`** 框 |
+| 缩后短边 `< 2 P3 格 (<16px)` | **`1,300`（`5.04%`）** | **`260`（`1.01%`）** | **减少 `1,040` 个极小目标（降幅 `-80.0%`）** |
+| 缩后短边 `< 3 P3 格 (<24px)` | `11,617`（`45.03%`） | **`5,202`（`20.17%`）** | 缩后短边 median `25.11px → 31.39px` |
+| 缩后 COCO Tiny（`<32×32 px²`） | `16,560`（`64.19%`） | **`11,745`（`45.53%`）** | 旧方案额外将 `4,815` 个目标压退化为 Tiny |
 
-#### 4. 类别长尾、昼夜分布与 `video_id` 分组规模（D1）
-
-- **类别极度长尾（`94.5:1`）**：`lamp_on = 22,207` 框（`5,940` 图）/ `lamp_off = 2,060` 框（`1,376` 图）/ `lamp_occluded = 235` 框（`213` 图）；**破损类（`streetlight_damaged`）`0` 个样本**（再次印证 `D-18`）。训练与验收必须单独紧盯 `lamp_off` 召回与 `lamp_occluded` 覆盖，不能只看整体 `mAP`。
-- **昼夜分布（抽样解码 `1,200` 张，`seed=42`）**：`V` 通道均值 min `23.67` / median `101.99` / mean `100.66` / p95 `147.36` / max `172.19`，场景分布为 **`day=532 / twilight=376 / night=292`**（三类光照均有充分代表，支撑 `§4` 收紧 `hsv_v`/`hsv_s` 防昼夜混淆的领域设计）。
-- **`video_id` 分组（`metadata.csv` `8,428` 行）**：共 **`10` 组**独立 `video_id`（`vid01`–`vid10`），每组帧数 min **`130`**（`vid02`）/ median **`554.5`** / mean `842.8` / p95 `2,096.2` / max **`2,890`**（`vid10`）。组规模跨度超过 `22×`，因此切分必须以 `video_id` 为并查集硬键防泄漏并审计各 split 的 `per_class` 样本均衡性。
-
-#### 5. D5 实测（`d5_street_light`）
-
-- 实盘扫描共 **`1,539` 张静态图 + `26` 个 `.mp4` 视频**，**`0` 个 YOLO `.txt` 检测框**（分类文件夹格式）：
-  - **`Raw Dataset`**：**`823`** 张静态图 + `26` 个 `.mp4`（`Working/` 内亦混入 4 个 `.mp4`）；Top 分辨率含 `4000×3000` × **`326`** 张、`4000×1800` × **`234`** 张（宽度 `>= 1280` 占 `77.89%`，长宽比 `0.23–2.22`；全量 823 张昼夜 `day=164 / twilight=373 / night=286`）；
-  - **`Resized Dataset`**：**`716`** 张静态图 + `0` 个视频，**全为 `200×200`**（`100.00%` 宽度 `<= 1024`；全量 716 张昼夜 `day=134 / twilight=320 / night=262`）。
-- 结论：D5 不含任何目标检测框，不能直接并入 YOLO 检测训练；`Raw` 高清图仅作后续人工补标扩展池，接入前须经 `dataset_prep.py` 的 `N1` 守卫自动剔除全部 `26` 个 `.mp4`。
-
-#### 6. 算力、显存与延迟实测（`.team/notes/vision-dev/logs/bench-1280-vs-1024.log`）
+#### 4. 算力、显存与延迟实测（`.team/notes/vision-dev/logs/bench-1280-vs-1024.log`）
 
 1. **本机 CPU `onnxruntime 1.32.0`**（`AMD Ryzen 9 8945H` 8C/16T，`CPUExecutionProvider`，`warmup=2, runs=10`）：
    - **合成代表图（`Conv+ReLU+Constant`, `671.0 KB`）**：`1280` **`19.12 ms`**（max `24.56 ms`）vs 旧 `1024` **`11.66 ms`**（max `14.68 ms`）；
@@ -135,49 +166,59 @@
 
 ### 2.3 统一类别体系与业务语义映射（`D-30` / `V3`）
 
-`src/tomori/vision/dataset_prep.py:35` 定义 `TARGET_NAMES`（源自 `config.RAW_CLASSES` `config.py:92-97`）：
+`src/tomori/vision/dataset_prep.py:52` 定义 `TARGET_NAMES`（源自 `config.RAW_CLASSES` `config.py:92-97`）：
 
-| 训练/推理类别 ID | 标准类名（`TARGET_NAMES`） | `D1` 原 ID（`DEFAULT_D1_ID_MAP`） | `SOURCE_CLASS_ALIASES` 兼容别名（`dataset_prep.py:55-79`） | 后端业务映射与安全边界（`src/tomori/vision/mapping.py`） |
+| 训练/推理类别 ID | 标准类名（`TARGET_NAMES`） | `d1` / `d4` / NHAI 典型原标映射 | `SOURCE_CLASS_ALIASES` 核心别名（`dataset_prep.py:88-130`） | 后端业务映射与安全边界（`src/tomori/vision/mapping.py`） |
 |---:|---|---|---|---|
-| **`0`** | `streetlight_on` | `0`（`lamp_on`） | `streetlight_on`, `lamp_on`, `working`, `on`, `on_streetlight`, `lit` | **夜间/黄昏**：按 **`D-30` 定案**回传前端作参照框（`visual_signal_state="NORMAL_LIT"`, `is_fault_candidate=false`）；**白天**强亮疑似常亮→`OTHER`（`is_fault_candidate=true`），弱信号抑制 |
-| **`1`** | `streetlight_off` | `1`（`lamp_off`） | `streetlight_off`, `lamp_off`, `not working`, `not_working`, `not-working`, `off`, `off_streetlight`, `unlit` | **夜间/黄昏**→`LAMP_OUT`（`is_fault_candidate=true`）；**白天**受昼夜物理边界抑制（`DAYTIME_UNPOWERED_EXPECTED`, `is_fault_candidate=false`） |
-| **`2`** | `streetlight_damaged` | —（D1 无） | `streetlight_damaged`, `damaged`, `lamp_damaged`, `broken`, `pole_damaged`, `damaged_pole` | 昼/夜均映射为 `FIXTURE_DAMAGED`（`is_fault_candidate=true`） |
-| **`3`** | `streetlight_occluded` | **`2`**（`lamp_occluded`） | `streetlight_occluded`, `lamp_occluded`, `occluded` | 昼/夜均映射为 `OCCLUDED`（`is_fault_candidate=true`） |
+| **`0`** | `streetlight_on` | `d1`: `0` (`lamp_on`)；`d4`: `Working→0` | `streetlight_on`, `lamp_on`, `working`, `on`, `lit`, `good_light` | **夜间/黄昏**：按 **`D-30` 定案**回传前端作参照框（`visual_signal_state="NORMAL_LIT"`, `is_fault_candidate=false`）；**白天**强亮疑似常亮→`OTHER`（`is_fault_candidate=true`），弱信号抑制 |
+| **`1`** | `streetlight_off` | `d1`: `1` (`lamp_off`)；`d4`: `Not Working→1` | `streetlight_off`, `lamp_off`, `not_working`, `non_working`, `off`, `unlit` | **夜间/黄昏**→`LAMP_OUT`（`is_fault_candidate=true`）；**白天**受昼夜物理边界抑制（`DAYTIME_UNPOWERED_EXPECTED`, `is_fault_candidate=false`） |
+| **`2`** | `streetlight_damaged` | `d3`: `Damaged→2`；NHAI: `DAMAGED-STREET-LIGHT→2`；`infras`: `broken-streetlamp→2` | `streetlight_damaged`, `damaged`, `broken_light`, `broken_lamp`, `defective_lamp`, `fallen_pole` | 昼/夜均映射为 `FIXTURE_DAMAGED`（`is_fault_candidate=true`） |
+| **`3`** | `streetlight_occluded` | `d1`: **`2`**（`lamp_occluded`） | `streetlight_occluded`, `lamp_occluded`, `occluded`, `obstructed_lamp` | 昼/夜均映射为 `OCCLUDED`（`is_fault_candidate=true`） |
 
 > **`V3` 训练标签防污染门禁**：静态图模型**永不定义也永不训练** `FLICKERING`（需多帧视频时序）与 `ELECTRIC_HAZARD`（需现场断电检测）。`mapping.py:51-58, 149-170` 与 `contract.py:49` 在输出与校验两层拦截这两类词汇并直接抛错。
 >
-> **诚实代码边界（`dataset_prep.py`）**：目前 `dataset_prep.py` 实现了针对 **YOLO 格式目录**（`data.yaml` / `classes.txt` / `--source name=/path[:idmap]` + `labels/*.txt`）的完整清洗、pHash 去重与切分管线；若后续接入非 YOLO 格式数据源（如 D2 全景裁切或 D5 分类图人工补标），需先将其转换为标准 `images/` + `labels/*.txt` 后再送入 `dataset_prep.py`。
+> **健康杆体/无关类防猜类红线**：`dataset_prep.py:86-87` 严禁把 `pole`、`utility_pole`、`street_light`、`normal` 等泛化类名自动猜映射到 `streetlight_damaged`；未在显式映射与 `SOURCE_CLASS_ALIASES` 中的类别默认显式 **`DROP`** 并记入 `dropped_classes_counts`。
 
-### 2.4 `src/tomori/vision/dataset_prep.py` 四重防泄漏清洗流水线
+### 2.4 多源 ETL 引擎能力、两处已修 Bug 与 13 项防泄漏流水线（`dataset_prep.py` + `eda.py`）
+
+#### 1. `src/tomori/vision/dataset_prep.py`（1,925 行）多源异构归一化流水线
 
 ```text
-原始多源目录 (images + labels + metadata.csv)
+多源异构目录 (YOLO 5列 / YOLO Polygon / COCO JSON / Pascal VOC XML + metadata.csv)
    │
-   ├─► [1] N1 视频红线守卫 (dataset_prep.py:37-52, 585-591)
+   ├─► [1] N1 视频红线与坏图守卫 (dataset_prep.py:57-71, 1401-1410)
    │       跳过 12 种视频/流扩展名 (.mp4/.mov/.avi/.mkv/.flv/.webm/.m4v/.ts/.mpg/.mpeg/.wmv/.m3u8)
-   │       仅放行 {.jpg, .jpeg, .png, .webp}；坏图/空图记入 skipped_corrupt_or_empty
+   │       仅放行 {.jpg, .jpeg, .png, .webp}；bad/empty 计入 skipped_corrupt_or_empty
    │
-   ├─► [2] 类别映射与坐标裁剪 (_parse_yolo_labels, :300-347)
-   │       裁剪至 [0.0, 1.0]，丢弃 bw<=1e-6 或 bh<=1e-6 的退化框；无标签图默认跳过
+   ├─► [2] 异构格式解析 + EXIF 转正 + 语义映射与显式 DROP (:353-395, 450-520, 756-995)
+   │       - YOLO 5列 bbox / YOLO 多边形转外接框 (yolo_polygon) / COCO JSON / Pascal VOC XML 统一转归一化 xywh
+   │       - EXIF 274 非 1 方向自动转正图像并同步变换归一化框坐标 (_transform_norm_xyxy_for_exif)
+   │       - 坐标裁剪至 [0,1] (merged_v2 clipped=50)；丢弃 min_box_px < 2.0 px 退化框 (dropped=1)
+   │       - 未映射类别显式 DROP (merged_v2 共 DROP 9,208 个无关类框、剔除 6,284 张纯无关类空图)
    │
-   ├─► [3] D7 64-bit 2D-DCT pHash 聚簇去重 (compute_phash64, :170-200, 369-435)
-   │       灰度缩至 (32,32) INTER_AREA → float32 2D-DCT → 取低频 8×8 块 (64 维)
-   │       → 用去直流后的 63 维 AC 中位数二值化打包为 64-bit 整数
-   │       → 分块(512)计算向量化 Hamming 距离 ≤ 6 归为同簇；每簇保留框最多者，其余去重
+   ├─► [3] 精确 SHA256 + Roboflow `.rf.` 同源识别 + 64-bit 2D-DCT pHash 去重 (:285-318, 1024-1135)
+   │       - content_sha256 去重 23 张跨源完全重复图；pHash(32×32 INTER_AREA → 8×8 DCT → 63-AC 中位数, Hamming ≤ 6) 去重 1,034 张
+   │       - rf_cluster_mode="stem" | "phash" 按源选择簇判据（见下 Bug 1 修复）
    │
-   ├─► [4] Union-Find 联合防泄漏切分 (_assign_group_splits, :442-528)
-   │       三键同组并查集：
-   │         ① {source}::video::{video_id}  (来自 D1 metadata.csv)
-   │         ② phash_cluster                 (来自步骤 3，即便 --no-dedupe 仍同簇绑定)
-   │         ③ content_sha256                (64KiB 分块哈希，防跨源完全相同图片跨 split)
-   │       按 (-len(组), sha256(seed:key)) 贪心均衡分配 train(70%) / val(15%) / test(15%)
+   ├─► [4] Union-Find 联合防泄漏切分 + 预增广锁死 train (:1137-1350)
+   │       四键同组并查集：{video_id, rf_stem (stem模式), phash_cluster, content_sha256}
+   │       凡 is_preaugmented=True (如 d4/train 1,446 张) 硬锁死不可进入 val/test (forbid_preaug_in_val_test=True)
    │
-   └─► [5] 9 项跨 split 交集=0 硬守卫 (:667-689) → 任一 > 0 直接 raise RuntimeError!
+   └─► [5] 13 项跨 split 交集=0 硬守卫 (:1602-1618) → 任一 > 0 直接 raise RuntimeError!
            输出：data.yaml + prep_manifest.json + images/{train,val,test} + labels/{train,val,test}
 ```
 
-**9 项强制零交集校验键（`leakage_checks`，任一非 `0` 中断落盘）**：
-`{video_id, phash_cluster, content_sha256}` × `{train_val_overlap, train_test_overlap, val_test_overlap}` = `9` 项全 `0`。
+**13 项强制零交集校验键（`leakage_checks`，`merged_v2` 实测全部为 `0`）**：
+`{video_id, rf_stem, phash_cluster, content_sha256}` × `{train_val_overlap, train_test_overlap, val_test_overlap}`（`12` 项） + `val_test_preaugmented_count`（`1` 项，保证 `val`/`test` 无预增广副本）= **`13` 项全 `0`**。
+
+#### 2. 本轮发现并修复的两处真实 Bug（含反假绿验证）
+
+1. **Bug 1（ETL）：`.rf.` 前缀短数字 stem 撞名误删 → 新增 `rf_cluster_mode: "stem" | "phash"`**（`dataset_prep.py:137-145, 162`）：
+   - **症状与根因**：旧版 `_dedupe_exact_and_rf` 与 `Union-Find` 无条件用 `(source, .rf.前缀stem)` 判同源增广簇。`d4` 原图 stem 是 13 位 Unix 毫秒时间戳（具唯一标识性），但 **`d7` 原图 stem 是 `100`/`105`/`110` 这类通用短数字**，导致两类误判：① **同名不同图**——`105_jpg` 前缀下混着 **`990` 对 dihedral-pHash `>14`、`MAD 31..63`、`corr 0.39..0.68` 的完全不同照片**，被当成增广副本误删（`1,928` 个真实簇误缩至 `1,450` 张）；② **异名同图**——跨 split 同图改名后抓不到；③ 且 `d4` 的 `±14° shear + hflip` 使同簇 pHash 高达 `26..32`，全局单一阈值不可兼得，必须按源结构化切换。
+   - **修复与反假绿验证**（`.team/notes/vision-dev/logs/task91-rfmode-fix.log`）：`DatasetSourceSpec` 新增 `rf_cluster_mode: "stem" | "phash"`（CLI `|rfmode=phash`）并记入 `prep_manifest.json` 审计；在构造「3 张同名 `105_jpg` 不同图 + 1 张异名同图」的测试中：**`stem` 模式误合并 `4→1`（`kept_images=1`）**，**`phash` 模式正确保留 `3` 张真差异图并靠 `content_sha256` 捕获异名同图**，证明修复真实生效而非恒绿。
+2. **Bug 2（EDA）：`eda.py` 原生像素保留率 `>100%`（`kept_1280 = 1.8886`）→ 三口径物理修复**（`eda.py:450-505`）：
+   - **症状与根因**：旧版 `eda.py` 把固定众数 `1280×720` 当公式基准且对上采样不做封顶——遇到 `640×640`/`416×416` 小图在 `1280` 下 `scale > 1` 时，`scale²` 直接算出 `>1` 的假「保留率」（甚至 `1.8886`）。
+   - **修复**：改为按每张图**真实 `(nw, nh)`** 逐框计算缩放率、对原生像素保留率加 **`min(1.0, scale²)` 物理封顶**（上采样不新增原生像素信息），并将报告拆为 **`mode_letterbox_scale`**（众数分辨率缩放率）、**`letterbox_scale` / `native_pixels_kept`**（全框均摊封顶）与 **`downsampled_boxes_ratio`**（发生下采样的框占比）三口径并列，彻底消除歧义（已由 `merged_v2` 实测复跑验证，详见 `§2.2.3`）。
 
 ---
 
@@ -187,7 +228,7 @@
 
 | 超参数 | `trainer.py` 值（来源坐标） | `default.yaml` 原值 | 实际生效行为 & 设计依据 |
 |---|---|---|---|
-| **`imgsz`** | **`1280`**（`config.py:19`, `trainer.py:47, 82-86` 硬锁定） | `640`（`:16`） | **显式覆盖**。`2×640` 步长整除，对 D1 `81.86%` `1280×720` 原图实现 `1:1` 零下采样；`__post_init__` 强拒非 `1280`，守 `D-28` 四端一致 |
+| **`imgsz`** | **`1280`**（`config.py:19`, `trainer.py:47, 82-86` 硬锁定） | `640`（`:16`） | **显式覆盖**。`2×640` 步长整除，对 `merged_v2` `60.19%` `1280×720` 众数图实现 `1:1` 零下采样；`__post_init__` 强拒非 `1280`，守 `D-28` 四端一致 |
 | **`batch`** | **`-1`**（`trainer.py:50, 183-220`；CPU/回退 `fallback_batch=16`） | `16`（`:15`） | **显式传解析后整数**。调 `autobatch.check_train_batch_size(..., fraction=0.6)` 按 ~60% 显存线性拟合后，由 `floor_power_of_two()`（`trainer.py:123-126`：`1 << (clamped.bit_length()-1)`，钳制 `[1, 64]`）**向下取 2 的幂**锁死（远端 `RTX 4080 SUPER @ 1280` 实测探测 `13` → 锁 **`batch=8`**，峰值 `12,028 MiB`） |
 | **`epochs`** | **`500`**（`trainer.py:48, 390`） | `100`（`:12`） | **显式覆盖**。扩大训练上限并交由 `patience=20` 控制停止轮次；对 LR 退火、`close_mosaic` 与 `E2ELoss` 的耦合风险及代码对冲见 `§3.1` |
 | **`patience`** | **`20`**（`trainer.py:49, 391`） | `100`（`:14`） | **显式覆盖**。连续 `20` 轮验证集 `mAP50-95` 未严格刷新历史最佳即触发 `EarlyStopping`（`utils/torch_utils.py:1120-1169`） |
@@ -254,7 +295,7 @@
 | 增强参数 | `trainer.py` 设定（守卫） | `default.yaml` 默认 | 设计依据与公共照明领域红线 |
 |---|---|---|---|
 | **`flipud`** | **`0.0`**（`__post_init__` **硬拦截 `!= 0.0` 报错**，`trainer.py:63, 87-88`） | `0.0`（`:124`） | **空间朝向硬禁区**：路灯灯杆垂直地面向上，灯头不可能倒挂于天空或路灯下方路面；`flipud > 0` 会造出物理上不存在的倒置灯杆/天空背景，干扰 `C2PSA` 上下文空间注意力 |
-| **`hsv_v`** | **`0.25`**（**硬拦截 `<= 0.25`**，`trainer.py:66, 89-90`） | `0.4`（`:118`） | **亮度防洗白红线（关键覆写）**：EDA 抽样显示 D1 兼含 `day=532 / twilight=376 / night=292`；默认 `0.4`（±40% 明度乘法抖动）会把微弱反光的夜间灭灯 `streetlight_off` 提亮成发光假象，或把弱亮灯压暗成灭灯，直接注入矛盾监督信号；收紧至 **`0.25`** |
+| **`hsv_v`** | **`0.25`**（**硬拦截 `<= 0.25`**，`trainer.py:66, 89-90`） | `0.4`（`:118`） | **亮度防洗白红线（关键覆写）**：`merged_v2` `2,000` 张随机抽样实测兼含 `day=979 / twilight=627 / night=394`；默认 `0.4`（±40% 明度乘法抖动）会把微弱反光的夜间灭灯 `streetlight_off` 提亮成发光假象，或把弱亮灯压暗成灭灯，直接注入矛盾监督信号；收紧至 **`0.25`** |
 | **`hsv_s`** | **`0.4`**（**硬拦截 `<= 0.4`**，`trainer.py:67, 91-92`） | **`0.7`**（`:117`） | **色度/光源防失真（关键覆写）**：高压钠灯（暖黄橙高饱和）与 LED 白光灯（低饱和冷白）饱和度差异本身携带灯具信息；默认 `0.7` 过强会导致过饱和霓虹/杂光或灰白褪色混淆，收紧至 **`0.4`** |
 | **`hsv_h`** | *未传*（沿用默认） | **`0.015`**（`:116`） | 微幅色相抖动覆盖高压钠灯/金卤灯/不同色温 LED 及相机白平衡差异，不致将绿植树冠误偏成暖黄灯光 |
 | **`fliplr`** | **`0.5`**（`trainer.py:64`） | `0.5`（`:125`） | 街道左右对称，50% 水平翻转可无损翻倍杆体与灯臂角度多样性 |
@@ -263,7 +304,7 @@
 | **`shear` / `perspective` / `bgr`** | *未传*（沿用默认） | `0.0` / `0.0` / `0.0`（`:122-126`） | 暂不加剪切与透视畸变；禁用 `bgr` 通道反转以保留钠灯暖黄 vs 天空冷蓝色彩特征 |
 | **`mosaic` / `close_mosaic`** | **`0.8`** / **`10`**（`trainer.py:58, 60, 400`） | `1.0` / `10`（`:34, 127`） | 由默认 `1.0` 适度降至 **`0.8`**（保留 `20%` 完整单图上下文学习整杆-天空尺度与昼夜全图光照分布）；`epochs=500` 下 `close_mosaic=10` 需第 `491` 轮触发，若早停未触发可通过 `--mosaic-polish-epochs`（`§3.1`）追加干净单图微调 |
 | **`mixup`** | **`0.05`**（`trainer.py:61`） | `0.0`（`:128`） | 仅 **`5%`** 极轻度透明混合，少量提升背景复杂场景抗干扰，严禁高比例 MixUp 以免昼夜帧半透明叠加造成灯头亮灭语义模糊 |
-| **`copy_paste`** | **`0.15`**（`trainer.py:62`） | `0.0`（`:130`） | 针对极稀缺故障（破损/遮挡）提升小目标同图出现频次（注：对纯 bbox 检测任务在部分 Ultralytics 版本仅在含 mask 分割标注时触发，配置保留作为策略声明） |
+| **`copy_paste`** | **`0.15`**（`trainer.py:62`） | `0.0`（`:130`） | **策略占位（对纯 bbox 检测集在 `ultralytics==8.4.216` 下 100% no-op）**：实读 `.venv` `ultralytics/data/augment.py:1983-1986`，`CopyPaste.__call__()` 首行即判定 `if len(labels["instances"].segments) == 0 or self.p == 0: return labels`；虽 `dataset_prep.py` 可读入 `yolo_polygon` 并转为标准 YOLO 5 列框，但 `merged_v2` 落盘标注不含分割 mask（`segments` 为空），故本参数在当前检测训练期 100% 空转不生效（与 `trainer.py:62` 配置保留一致，仅作未来引入实例分割 mask 时的策略标记） |
 | **`val` / `test` 零增广** | 评估强制纯净输入 | — | 验证与测试阶段关闭一切合成增广，确保评估指标真实反映巡查原始图像表现 |
 | **低照度增强参考（`D6`）** | 离线研究参考，不写死进推理前置 | — | 借鉴 D6 的 CLAHE + Gamma + Unsharp 思路仅作夜间极暗样本增强实验参考；线上推理须保留原始亮度分布供 `metrics.py` 准确判断 `day/twilight/night` |
 
@@ -317,7 +358,7 @@
 | 17 | `train_config` | 完整 **28 键**训练超参字典（含 `"nms": false` 显式标明早停判据头选择） |
 | 18 | `early_stopping_diagnostics` | `_schedule_diagnostics()` 输出（`stopped_epoch`、残余 LR 比例、`close_mosaic` 与 `E2ELoss` 权重状态） |
 | 19 | `sha256` | `best.pt`、`best_e2e.onnx`、`last.pt` 的 SHA-256 摘要映射 |
-| 20 | `dataset_manifest` | `prep_manifest.json` 完整 JSON 摘要（未找到时为 `null`） |
+| 20 | `dataset_manifest` | 训练输入对应的 `prep_manifest.json` 完整 JSON 摘要（本轮定版对应 `merged_v2/prep_manifest.json`：`10,253` 保留图 / `7` 源 / `13` 项防泄漏校验全 `0`；未找到时为 `null`） |
 
 ### 5.2 评估口径与模型回传准入门禁
 
@@ -335,21 +376,27 @@
 source /root/autodl-tmp/tomori/env.sh
 cd /root/autodl-tmp/tomori/repo
 
-# 2) 数据清洗、64-bit pHash 去重与防泄漏 70/15/15 切分（以 D1 实拉目录为例）
+# 2) 多源异构清洗、pHash/RF 去重与防泄漏切分（定版 merged_v2 7 源入池命令）
 /root/.local/bin/uv run python -m tomori.vision.dataset_prep \
-  --source d1=/root/autodl-tmp/tomori/datasets/d1_lamp_state \
-  --output-dir /root/autodl-tmp/tomori/datasets/prepared_v1 \
-  --phash-threshold 6 --seed 42
+  --source "d1=/root/autodl-tmp/tomori/datasets/d1_lamp_state" \
+  --source "d3=/root/autodl-tmp/tomori/datasets/d3_streetlamppole" \
+  --source "d4=/root/autodl-tmp/tomori/datasets/d4_damaged_lights|preaug=1,rfmode=phash,map=Not Working:1;Working:0" \
+  --source "ext_pwd_s6=/root/autodl-tmp/tomori/datasets/ext_pwd_s6" \
+  --source "ext_pwd_s1=/root/autodl-tmp/tomori/datasets/ext_pwd_s1" \
+  --source "ext_prj_n_8=/root/autodl-tmp/tomori/datasets/ext_prj_n_8" \
+  --source "ext_infras_broken=/root/autodl-tmp/tomori/datasets/ext_infras_broken|splits=valid;test" \
+  --output-dir /root/autodl-tmp/tomori/datasets/merged_v2 \
+  --dedupe-rf-siblings --phash-threshold 6 --seed 42
 
 # 3)（可选）无 GPU 干跑校验数据 YAML 与红线参数
 /root/.local/bin/uv run python -m tomori.vision.trainer \
-  --data /root/autodl-tmp/tomori/datasets/prepared_v1/data.yaml \
+  --data /root/autodl-tmp/tomori/datasets/merged_v2/data.yaml \
   --dry-run
 
 # 4) RTX 4080 SUPER 正式训练 + 双头离线验证/测试 + best_e2e.onnx 导出 + SHA256SUMS 生成
 #    可选补充：若训练在 491 轮前早停且需两阶段无 Mosaic 收尾精修，可追加 --mosaic-polish-epochs 10
 /root/.local/bin/uv run python -m tomori.vision.trainer \
-  --data /root/autodl-tmp/tomori/datasets/prepared_v1/data.yaml \
+  --data /root/autodl-tmp/tomori/datasets/merged_v2/data.yaml \
   --model /root/autodl-tmp/tomori/weights/yolo26s.pt \
   --project /root/autodl-tmp/tomori/runs \
   --name streetlight_v1 \
@@ -359,11 +406,12 @@ cd /root/autodl-tmp/tomori/repo
 ### 6.2 诚实状态声明（`F14` 边界）
 
 - **已证实与已落盘**：
-  1. 清洗、EDA 与训练脚本 `src/tomori/vision/dataset_prep.py`（875 行）、`src/tomori/vision/eda.py`（784 行）、`src/tomori/vision/trainer.py`（**757 行**）已落地并经本地 `.venv` `ultralytics==8.4.216` 源码逐行核对（`config.py:19` 与 `trainer.py:47-74, 418, 477, 504, 515, 528, 537, 546, 575-645` 已同步锁定 `imgsz=1280`、`epochs=500`、`patience=20`、`lrf=0.01`、`cos_lr=False`、`mosaic_polish_epochs=0`、`nms=False`、「早停判据头 == 部署头」`head_contract` 与 `metrics.json` 20 键 / `train_config` 28 键契约）；
-  2. 远端 `RTX 4080 SUPER`（`32,760 MiB` 总显存 / `32,230–32,231 MiB` 空闲、`CUDA 13.2`、`PyTorch 2.15.0+cu132`）、`/root/autodl-tmp/tomori/weights/yolo26s.pt`（`20,422,725 B`）、以及 **D1（8,428 图 / 24,502 框）与 D5（1,539 图 + 26 `.mp4` / 0 框）只读 EDA** 已实机核验落盘（`.team/notes/vision-dev/dataset-eda-report.md`）；
-  3. 本地 CPU `onnxruntime 1.32.0`（`yolo26s` E2E `nc=4` @ `1280` 默认线程 `median=383.40ms / max=464.97ms`，单线程最坏 `max=1,029.13ms`，距 `60s` 超时余量 `58.3×`）与远端 `RTX 4080 SUPER` 只读 AutoBatch 探测（`imgsz=1280` 探 `13` → 锁死 `batch=8`，3 步 dummy 峰值 `12,028 MiB / 11.75 GiB`；测后 `runs/` 为空、`nvidia-smi` `used=1 MiB`）已完成实测记录（`.team/notes/vision-dev/logs/bench-1280-vs-1024.log`）；
-  4. **「早停判据头 == 部署头」源码链路与离线契约实证已落盘**（`.team/notes/vision-dev/logs/task86-head-plumbing-full.log`、`task86-probe-head-switch-proof.log`、`task86-metrics-schema-sim.log`）：在代码审查级链路核验基础上，离线随机权重 `Detect` 前向实证确认 `nms=None` → `Detect.end2end=False` 输出 `(1, 84, 33600)` vs `nms=False` → `Detect.end2end=True` 输出 `(1, 300, 6)`（与 `best_e2e.onnx` 部署张量完全一致），且本地模拟 `metrics.json` 20 键 / `train_config` 28 键契约测试及 `client._load_metrics_metadata` / `_validate_metrics_names` 实跑全部通过（`SCHEMA OK`）。
+  1. 清洗、EDA 与训练脚本 `src/tomori/vision/dataset_prep.py`（**1,925** 行）、`src/tomori/vision/eda.py`（**928** 行）、`src/tomori/vision/trainer.py`（**757** 行）已落地并经本地 `.venv` `ultralytics==8.4.216` 源码逐行核对（`config.py:19` 与 `trainer.py:47-74, 418, 477, 504, 515, 528, 537, 546, 575-645` 已同步锁定 `imgsz=1280`、`epochs=500`、`patience=20`、`lrf=0.01`、`cos_lr=False`、`mosaic_polish_epochs=0`、`nms=False`、「早停判据头 == 部署头」`head_contract` 与 `metrics.json` 20 键 / `train_config` 28 键契约）；
+  2. 远端 `RTX 4080 SUPER`（`32,760 MiB` 总显存 / `32,230–32,231 MiB` 空闲、`CUDA 13.2`、`PyTorch 2.15.0+cu132`）、`/root/autodl-tmp/tomori/weights/yolo26s.pt`（`20,422,725 B`）、以及 **定版 `merged_v2` 7 源入池数据（`10,253` 图 / `25,797` EDA 框，13 项防泄漏校验全 `0`）与全量只读 EDA（含三口径 `1024 vs 1280` 对比）** 已实机执行核验落盘（`.team/notes/vision-dev/{merged-v2-vs-v1-report.md,dataset-eda-merged-v2.md}`、`.team/notes/vision-dev/logs/{merged_v2_prep_manifest.json,dataset_eda_merged_v2.json}`）；
+  3. **公开调研与长尾诚实边界**：遍查 8 大公开平台确认全网 `OCCLUDED` 除 `d1`（原始 `235` 框 / `merged_v2` 保留 `227` 框）外**无第二个公开源**，后续仅靠合成遮挡与阶段二自采补足；主动剔除 `d7` 乡村配电木杆与 `ext_civic_broken` 错标灭灯后 `streetlight_damaged` 净留 `1,365` 框，仍遵循 **`D-18`** 不承诺破损类检出率；
+  4. 本地 CPU `onnxruntime 1.32.0`（`yolo26s` E2E `nc=4` @ `1280` 默认线程 `median=383.40ms / max=464.97ms`，单线程最坏 `max=1,029.13ms`，距 `60s` 超时余量 `58.3×`）与远端 `RTX 4080 SUPER` 只读 AutoBatch 探测（`imgsz=1280` 探 `13` → 锁死 `batch=8`，3 步 dummy 峰值 `12,028 MiB / 11.75 GiB`；测后 `runs/` 为空、`nvidia-smi` `used=1 MiB`）已完成实测记录（`.team/notes/vision-dev/logs/bench-1280-vs-1024.log`）；
+  5. **「早停判据头 == 部署头」源码链路与离线契约实证已落盘**（`.team/notes/vision-dev/logs/task86-head-plumbing-full.log`、`task86-probe-head-switch-proof.log`、`task86-metrics-schema-sim.log`）：在代码审查级链路核验基础上，离线随机权重 `Detect` 前向实证确认 `nms=None` → `Detect.end2end=False` 输出 `(1, 84, 33600)` vs `nms=False` → `Detect.end2end=True` 输出 `(1, 300, 6)`（与 `best_e2e.onnx` 部署张量完全一致），且本地模拟 `metrics.json` 20 键 / `train_config` 28 键契约测试及 `client._load_metrics_metadata` / `_validate_metrics_names` 实跑全部通过（`SCHEMA OK`）。
 - **未运行与待回填（严禁提前编造）**：
-  1. **`dataset_prep.py` 正式切分执行**（70/15/15 切分后真实保留张数、pHash 去重数、9 项 `leakage_checks` 与 `prep_manifest.json`、以及是否经 API Key 补充 D3/D4/D7 或人工补标破损样本）与 **远端 `RTX 4080 SUPER` 正式训练**（全周期 `yolo train` 启动，`task-74` 尚未由用户放行）尚未完成；
+  1. **远端 `RTX 4080 SUPER` 正式全周期训练**（基于 `merged_v2/data.yaml` 启动 `yolo train`，`task-74` 尚未由用户放行）尚未执行；
   2. 因用户尚未放行远端全周期正式训练，**「早停头切换在真实训练下的 `mAP` 实际差异」目前无法实测**，上述头选择闭环属**代码审查级证据**（辅以离线随机权重 `Detect` 前向实证与本地模拟 `metrics.json` 契约测试，见 `.team/notes/vision-dev/logs/task86-probe-head-switch-proof.log` & `task86-metrics-schema-sim.log`），待 `task-74` 放行实训后由真实 `metrics.json` 的 **`val_metrics_e2e_head` vs `val_metrics_default_head`**（及 `test_metrics_e2e_head` vs `test_metrics_default_head`）实测闭环；
-  3. 本文当前**不包含**真实数据集切分后样本计数、正式训练中的每 epoch/总训练耗时、真实 `stopped_epoch` 与 `early_stopping_diagnostics`、`val_mAP50`/`val_mAP50_95`、`val_metrics_e2e_head`/`val_metrics_default_head`、`per_class` AP、`test_metrics_default_head`/`test_metrics_e2e_head` 与本地回传 `best_e2e.onnx` 的真实 `SHA256`；上述实测值将在远端正式训练完成后按真实 `metrics.json` 与日志回填本节。
+  3. 本文当前**不包含**基于 `merged_v2` 的正式训练每 epoch/总耗时、真实 `stopped_epoch` 与 `early_stopping_diagnostics`、`val_mAP50`/`val_mAP50_95`、`val_metrics_e2e_head`/`val_metrics_default_head`、`per_class` AP、`test_metrics_default_head`/`test_metrics_e2e_head` 与本地回传 `best_e2e.onnx` 的真实 `SHA256`；上述实测值将在远端正式训练完成后按真实 `metrics.json` 与日志回填本节。
