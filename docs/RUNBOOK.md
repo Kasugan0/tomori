@@ -71,7 +71,7 @@ cp .env.example .env
   - `docs/REQUIREMENTS.md`：五项核心红线 `N1–N5`（§5）、`V1–V3` 与 `D-18`/`D-29`/`D-30`/`D-31` 智能及数据集边界（§6）。
   - `docs/API.md`：`POST /tickets/ai-candidates` 媒体上传顺序与错误映射（§3.3 `413 IMAGE_SIZE_EXCEEDED`、§3.4 `503 VISION_*`、§3.5 两个 `415` 分界、§5 处理顺序；视觉降级契约 `D1–D3` 见 `docs/DESIGN.md` §5.2）。
   - `docs/DECISION.md`：`D-01`（远端 SSH）、`D-06`（只用 `yolo26s.pt`）、`D-10`（PG 17.12）、`D-28`（`imgsz=1280`）、`D-29`（个人项目直接使用数据集）、`D-30`（`streetlight_on` 回传参照）、`D-32`（单根包）。
-  - `docs/TRAIN.md`：远端 YOLO26s@1280 训练指南（`D1` EDA、AutoBatch `batch=8`、`epochs=500 / patience=20`、`--mosaic-polish-epochs` 精修及 ONNX 导出契约）。
+  - `docs/TRAIN.md`：远端 YOLO26s@1280 训练指南（`D1` EDA、`epochs=500 / patience=20`、`--mosaic-polish-epochs` 精修及 ONNX 导出契约；`batch` 为必填固定实测值，`src/tomori/vision/trainer.py` 已删除 AutoBatch）。
 
 > 注意：`.env`、`.env.local`、`uploads/`、`*.pt`、`*.onnx`、`*.egg-info/`、`vision/weights/`、`vision/datasets/`、`vision/runs/` 与 `.team/` 均不入 git，严禁将真实凭据、大体积图片或权重文件提交至仓库。
 
@@ -82,7 +82,7 @@ cp .env.example .env
 - **同步依赖**：
   - 纯后端开发：`uv sync`
   - 含视觉推理/训练依赖：`uv sync --extra vision`
-  - 包导入自检：`uv run python -c "import tomori"`
+  - 包导入自检：`uv run --no-sync python -c "import tomori"`
 - **Alembic 数据库迁移**（`alembic.ini` 位于仓库根，`sqlalchemy.url` 留空由 `env.py` 从 `Settings` 注入）：
   ```bash
   uv run alembic -c alembic.ini upgrade head
@@ -332,18 +332,18 @@ curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="/root/autodl-tm
 
 4. **绑定 Ultralytics 目录设置、关闭 `sync` 防 `sentry-sdk 3.0.0` 崩溃并验证 CUDA 可见性**：
    > ⚠️ **已实证坑（`task-72`）**：`fastapi[standard]` → `fastapi-cloud-cli` 会拉入 `sentry-sdk==3.0.0`，该版本删除了 `include_local_variables` 参数；而 `ultralytics==8.4.216`（`ultralytics/utils/__init__.py:1544`）在 CLI 入口调 `set_sentry()` 时会传入 `include_local_variables=False`，导致初次直接运行 `yolo settings` 抛 `TypeError: Unknown option 'include_local_variables'` 崩溃。
-   > **正确修法（严禁改动锁定的 `sentry-sdk` / `ultralytics` 包版本）**：先让 `$YOLO_CONFIG_DIR/Ultralytics/settings.json` 生成并将 `"sync"` 置为 `false`（命中 `set_sentry()` L1504 的第一个早退条件 `not SETTINGS["sync"]: return`），同时写入三个落盘目录：
+   > **正确修法（严禁改动锁定的 `sentry-sdk` / `ultralytics` 包版本，且不用 `python -c`）**：先容忍一次 `yolo settings` 崩溃让其生成 `$YOLO_CONFIG_DIR/Ultralytics/settings.json`，再用 `sed` 把 `"sync": true` 翻为 `false`（命中 `set_sentry()` L1504 的首个早退条件 `not SETTINGS["sync"]: return`），之后即可正常用 `yolo settings` / `yolo checks`：
    ```bash
-   ssh tomori-gpu 'source /root/autodl-tmp/tomori/env.sh && /root/autodl-tmp/tomori/venv/bin/python -c "
-import json, pathlib
-from ultralytics.utils import SETTINGS
-p = pathlib.Path(\"/root/autodl-tmp/tomori/config/Ultralytics/settings.json\")
-d = json.loads(p.read_text(encoding=\"utf-8\")) if p.exists() else dict(SETTINGS)
-d.update({\"sync\": False, \"datasets_dir\": \"/root/autodl-tmp/tomori/datasets\", \"weights_dir\": \"/root/autodl-tmp/tomori/weights\", \"runs_dir\": \"/root/autodl-tmp/tomori/runs\"})
-p.write_text(json.dumps(d, indent=2) + \"\n\", encoding=\"utf-8\")
-" && /root/autodl-tmp/tomori/venv/bin/yolo settings && /root/autodl-tmp/tomori/venv/bin/yolo checks'
-   ssh tomori-gpu "source /root/autodl-tmp/tomori/env.sh && /root/autodl-tmp/tomori/venv/bin/python -c 'import torch, ultralytics, cv2, onnxruntime, tomori.vision; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0), round(torch.cuda.get_device_properties(0).total_memory/1024**3,1), ultralytics.__version__, cv2.__version__, onnxruntime.__version__)'"
+   ssh tomori-gpu 'source /root/autodl-tmp/tomori/env.sh && \
+     /root/autodl-tmp/tomori/venv/bin/yolo settings || true; \
+     sed -i "s/\"sync\": true/\"sync\": false/" /root/autodl-tmp/tomori/config/Ultralytics/settings.json; \
+     /root/autodl-tmp/tomori/venv/bin/yolo settings \
+       datasets_dir=/root/autodl-tmp/tomori/datasets \
+       weights_dir=/root/autodl-tmp/tomori/weights \
+       runs_dir=/root/autodl-tmp/tomori/runs && \
+     /root/autodl-tmp/tomori/venv/bin/yolo checks'
    ```
+   > `yolo checks` 输出即 CUDA/依赖验证书：应显示 `Ultralytics 8.4.216 🚀 Python-3.12.3 torch-2.15.0+cu132 CUDA:0 (NVIDIA GeForce RTX 4080 SUPER, 32231MiB)`。
    > 依据 `https://docs.ultralytics.com/usage/settings/`：`yolo settings` 将持久配置写入 `$YOLO_CONFIG_DIR/Ultralytics/settings.json`（不写根分区 `~/.config`）。
    > **预期输出说明**：`yolo checks` 中 `opencv-python ❌ (not installed)` 为 `[tool.uv] override-dependencies` 屏蔽 GUI 轮子后的**预期结果**（`cv2` 由 `opencv-python-headless==5.1.0.95` 提供，实测正常）；**严禁额外补装 `opencv-python`**。
 
@@ -379,7 +379,7 @@ p.write_text(json.dumps(d, indent=2) + \"\n\", encoding=\"utf-8\")
 1. **执行标准清洗与防泄漏切分（必须在训练前运行，修复坏 `D1/data.yaml`）**：
    ```bash
    ssh tomori-gpu "source /root/autodl-tmp/tomori/env.sh && cd /root/autodl-tmp/tomori/repo && \
-     /root/.local/bin/uv run python -m tomori.vision.dataset_prep \
+     /root/.local/bin/uv run --no-sync /root/autodl-tmp/tomori/repo/src/tomori/vision/dataset_prep.py \
        --source d1=/root/autodl-tmp/tomori/datasets/d1_lamp_state \
        --output-dir /root/autodl-tmp/tomori/datasets/prepared_v1 \
        --phash-threshold 6 --seed 42"
@@ -394,35 +394,36 @@ p.write_text(json.dumps(d, indent=2) + \"\n\", encoding=\"utf-8\")
    备选（若远端 GitHub 加速波动）：在本地下载后校验 `stat -c '%s' ./yolo26s.pt`（须等于 `20422725`）再 `rsync -avz --progress ./yolo26s.pt tomori-gpu:/root/autodl-tmp/tomori/weights/`。
 
 3. **在持久会话中启动训练（防 SSH 断开中断，日志落盘）**：
-   使用 `tmux` 启动训练（`tmux`/`screen` 实测均已安装）；推荐通过项目封装 CLI `python -m tomori.vision.trainer`（内置 `D-06`/`D-28`/`D-18`/AutoBatch/双头验证/ONNX 校验与 `SHA256SUMS` 生成）：
+   使用 `tmux` 启动训练（`tmux`/`screen` 实测均已安装）；推荐通过项目封装 CLI **直接调用脚本文件** `src/tomori/vision/trainer.py`（内置 `D-06`/`D-28`/`D-18`/双头验证/ONNX 校验与 `SHA256SUMS` 生成；**AutoBatch 已删除，`batch` 为必填固定值**），远端统一用 **`uv run --no-sync <脚本>`**（`--no-sync` 防止 venv 被重解析）：
    ```bash
    ssh -t tomori-gpu "tmux new -s tomori-train"
    # 在 tmux 会话内执行：
    source /root/autodl-tmp/tomori/env.sh
    cd /root/autodl-tmp/tomori/repo
    # 可选：先无 GPU 干跑校验数据 YAML 与参数护栏
-   /root/.local/bin/uv run python -m tomori.vision.trainer \
+   /root/.local/bin/uv run --no-sync /root/autodl-tmp/tomori/repo/src/tomori/vision/trainer.py \
      --data /root/autodl-tmp/tomori/datasets/prepared_v1/data.yaml \
+     --model /root/autodl-tmp/tomori/weights/yolo26s.pt \
      --dry-run
 
-   # 正式训练 + 双头离线测试 + best_e2e.onnx 导出 + SHA256SUMS（imgsz=1280, epochs=500, patience=20, batch=-1）
-   /root/.local/bin/uv run python -m tomori.vision.trainer \
+   # 正式训练 + 双头离线测试 + best_e2e.onnx 导出 + SHA256SUMS（imgsz=1280, epochs=500, patience=20, batch=<实测值>）
+   /root/.local/bin/uv run --no-sync /root/autodl-tmp/tomori/repo/src/tomori/vision/trainer.py \
      --data /root/autodl-tmp/tomori/datasets/prepared_v1/data.yaml \
      --model /root/autodl-tmp/tomori/weights/yolo26s.pt \
      --project /root/autodl-tmp/tomori/runs \
      --name streetlight_v1 \
-     --imgsz 1280 --epochs 500 --patience 20 --batch -1 \
+     --imgsz 1280 --epochs 500 --patience 20 --batch <实测值> \
      2>&1 | tee /root/autodl-tmp/tomori/runs/train_streetlight_v1.log
    ```
-   等效底层 Ultralytics 参数（参考 `docs/TRAIN.md` §3）：
+   等效底层 Ultralytics 参数（参考 `docs/TRAIN.md` §3；`--batch` 与上面同值）：
    ```bash
-   /root/.local/bin/uv run yolo train \
+   /root/.local/bin/uv run --no-sync yolo train \
      model=/root/autodl-tmp/tomori/weights/yolo26s.pt \
      data=/root/autodl-tmp/tomori/datasets/prepared_v1/data.yaml \
      epochs=500 \
      patience=20 \
      imgsz=1280 \
-     batch=8 \
+     batch=<实测值> \
      device=0 \
      amp=True \
      flipud=0.0 \
@@ -435,14 +436,15 @@ p.write_text(json.dumps(d, indent=2) + \"\n\", encoding=\"utf-8\")
    > **只用 `yolo26s.pt` 一个档位**（用户 `D-06`）。`n`/`m`/`l`/`x` 一律不使用；需要更强表达力时通过 `imgsz` 与数据增强解决，**不换 scale**（§6.4 末注）。
    > 出处：`yolo26n/s/m/l/x.pt` 均为官方真实文件名，见 https://docs.ultralytics.com/models/yolo26 （Detection 行）；权重可从 https://github.com/ultralytics/assets/releases/tag/v8.4.0 下载。核实记录见 `.team/notes/research/yolo26-official-sources.md`。
    > **`imgsz` 必须与 `.env` 的 `YOLO_IMG_SIZE` 完全一致（当前 `1280`）**：训练尺寸 → `export(..., imgsz=1280, nms=False, dynamic=False)` → `.env` → 推理端四者必须同值，否则 ONNX 图内固化的输入尺寸与推理传入尺寸不符，首次推理即张量形状报错（`docs/DESIGN.md` §5.3）。
-   > **显存调参建议（本机实测 32G 档）**
-   >
-   > 🟢 **有官方出处的一条**：
-   > - 建议先用 `batch=-1` 让 AutoBatch 自动探测（官方定量：单卡目标约 **60% 显存占用**，也可写小数如 `batch=0.70`），再取探测值向下取 2 的幂写死，保证可复现。
-   >   出处：https://docs.ultralytics.com/guides/model-training-tips ；`ultralytics==8.4.216` 的 `cfg/default.yaml` 逐字 `batch: 16 # (int | float) batch size as int (e.g. 16), -1 for AutoBatch, or float in (0.0, 1.0) for GPU memory fraction`
-   >
-   > 🟡 **以下为本项目实测显存与工程参数（`docs/TRAIN.md` §2.2 & §3.1）**：
-   > - **本机实测显存为 32G（`32760 MiB`），只用 32G 分档**：`imgsz=1280` 下经 AutoBatch 实测探测为 **`13`**，向下取 2 的幂锁死 **`batch=8`**（3 步 dummy 实测峰值 `12,028 MiB / 11.75 GiB`；`batch=16` 峰值 `23,396 MiB / 22.85 GiB` 超过 60% 上限）。48G 分档留档供未来机型，当前不适用。
+   > **`batch` 现在为必填固定值（AutoBatch 已删除，`--batch >=1` 校验）**：
+   > - 由 `trainer.py` 顶部 `_DEFAULTS` 常量区集中管理超参；`batch` 须在 `--batch` CLI 显式传入实测安全值（历史 AutoBatch `batch=-1` 与 `13→8` 探测故事已废弃）。
+   > - **当前 `RTX 4080 SUPER`（`32760 MiB`）实测峰值表（`task-74` detached 0.5s `nvidia-smi` 采样，全管线含 ONNX 导出口径，`imgsz=1280`、`epochs=1`、`merged_v5`）**：
+   >   | `--batch` | 实测峰值显存 | 占 32,760 MiB | 余量 | 判定 |
+   >   |---:|---:|---:|---:|---|
+   >   | `32` | **32,214 MiB** | **98.3%** | ~546 MiB | ❌ 贴顶，长程训练易因碎片/验证批 OOM |
+   >   | `24` | **30,720 MiB** | **93.8%** | ~2,040 MiB | ⚠️ 挤 |
+   >   | `16` | **20,708 MiB** | **63.2%** | ~12,052 MiB | ✅ 当前安全档 |
+   >   > 出处：`.team/notes/dev-ops/logs/task74-probe-b32.log` 与远端 `probe_{b16,b24,b32}_status.txt`（`exit=0` 全通过）。`batch=32` 虽物理可跑完，但不符合 `<~29GB` 的安全约束；若用户要求等效 `≥32`，用 `batch=16` + 梯度累积 `×2` 达到等效 32 而不是硬顶显存。
    > - **`epochs=500 --patience 20`** 为项目定案参数（交由 `EarlyStopping` 监控 `mAP50-95` 控制收敛；若于第 `491` 轮前早停导致 `close_mosaic=10` 未触发，可用 `--mosaic-polish-epochs 10` 追加两阶段无 Mosaic 短微调，详见 `docs/TRAIN.md` §3.1）。
    > - 小目标（如远景灯头）需要更高分辨率时，通过**提高 `imgsz`、调整数据增强**等手段处理，**不换 scale**（用户已明确只用 `yolo26s`，故 `m`/`l`/`x` 不在阶段二选项内）。
    >
@@ -452,9 +454,9 @@ p.write_text(json.dumps(d, indent=2) + \"\n\", encoding=\"utf-8\")
    >
    > **写作纪律**：本段落曾把「项目工程初值」与「官方结论」混在一句「依据官方指南」之下，导致读者连带误信。**每条断言各自标出处，不共享段落级出处。**
 
-4. **导出端到端无 NMS ONNX（`best_e2e.onnx`，`docs/DESIGN.md` §5.3；若使用 `python -m tomori.vision.trainer` 则已自动执行）**：
+4. **导出端到端无 NMS ONNX（`best_e2e.onnx`，`docs/DESIGN.md` §5.3；`src/tomori/vision/trainer.py` 在训练后已自动完成本步，仅当手工补导出时执行）**：
    ```bash
-   /root/autodl-tmp/tomori/venv/bin/yolo export \
+   /root/.local/bin/uv run --no-sync yolo export \
      model=/root/autodl-tmp/tomori/runs/streetlight_v1/weights/best.pt \
      format=onnx \
      imgsz=1280 \
