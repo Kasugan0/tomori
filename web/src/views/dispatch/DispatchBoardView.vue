@@ -570,7 +570,7 @@ onMounted(async () => {
                   :data-testid="`dispatch-assignee-option-${item.username}`"
                   data-eligible="true"
                 >
-                  <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 4px 8px">
+                  <div class="dispatch-option-row">
                     <span>
                       {{ item.full_name }} ({{ item.username }})
                       <small style="color: #909399">
@@ -603,7 +603,7 @@ onMounted(async () => {
                   data-eligible="false"
                   :data-reason="ex.reason"
                 >
-                  <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 4px 8px">
+                  <div class="dispatch-option-row">
                     <span>
                       {{ ex.full_name }} ({{ ex.username }})
                       <small style="color: #909399">
@@ -762,5 +762,19 @@ onMounted(async () => {
 
 .quick-link:hover {
   text-decoration: underline;
+}
+
+.dispatch-option-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+@media (max-width: 767px) {
+  .dispatch-option-row {
+    flex-wrap: wrap;
+    gap: 4px 8px;
+  }
 }
 </style>

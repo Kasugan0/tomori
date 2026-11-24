@@ -196,38 +196,38 @@ body,
   margin-bottom: 16px;
 }
 
-/* Prevent Element Plus poppers / select dropdowns / dialogs from overflowing narrow mobile viewports (390px) */
-.el-popper,
-.el-select__popper,
-.el-dropdown__popper {
-  max-width: calc(100vw - 16px) !important;
-  box-sizing: border-box !important;
-}
-
-.el-select__popper .el-select-dropdown,
-.el-select__popper .el-select-dropdown__wrap {
-  max-width: 100% !important;
-}
-
-.el-select__popper .el-select-dropdown__item {
-  max-width: 100% !important;
-  height: auto !important;
-  min-height: 34px;
-  white-space: normal !important;
-  word-break: break-word;
-  line-height: 1.45 !important;
-  padding-top: 6px !important;
-  padding-bottom: 6px !important;
-}
-
-.el-dialog,
-.el-message-box {
-  max-width: calc(100vw - 24px) !important;
-  box-sizing: border-box !important;
-}
-
+/* Narrow-screen (<= 767px, e.g. 390x844) Element Plus popper / dialog overflow guards */
 @media (max-width: 767px) {
+  .el-popper,
+  .el-select__popper,
+  .el-dropdown__popper {
+    max-width: calc(100vw - 16px) !important;
+    box-sizing: border-box !important;
+  }
+
   .el-select > .el-select__popper {
     max-width: min(100%, calc(100vw - 16px)) !important;
+  }
+
+  .el-select__popper .el-select-dropdown,
+  .el-select__popper .el-select-dropdown__wrap {
+    max-width: 100% !important;
+  }
+
+  .el-select__popper .el-select-dropdown__item {
+    max-width: 100% !important;
+    height: auto !important;
+    min-height: 34px;
+    white-space: normal !important;
+    word-break: break-word;
+    line-height: 1.45 !important;
+    padding-top: 6px !important;
+    padding-bottom: 6px !important;
+  }
+
+  .el-dialog,
+  .el-message-box {
+    max-width: calc(100vw - 24px) !important;
+    box-sizing: border-box !important;
   }
 }
