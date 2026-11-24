@@ -181,6 +181,19 @@ def _reset_and_reseed_rules() -> None:
 
 
 # ── session fixtures ─────────────────────────────────────────────────────────
+@pytest.fixture(scope="session")
+def base_url(pytestconfig: pytest.Config) -> str | None:
+    """Module-level `base_url` session fixture replacing `pytest_playwright._BaseUrlFallback`.
+
+    `pytest-playwright` (without `pytest-base-url`) registers `_BaseUrlFallback.base_url`
+    as a bound instance method with `scope="session"`, which triggers
+    `PytestRemovedIn10Warning` on pytest 9.2+. Defining the same fixture at module scope
+    keeps `--base-url` / `base_url` ini semantics intact with zero warning.
+    """
+    raw = pytestconfig.getoption("--base-url") or pytestconfig.getini("base_url") or None
+    return str(raw) if raw else None
+
+
 @pytest.fixture(scope="session", autouse=True)
 def e2e_pg_session_lock() -> Iterator[None]:
     """Serialize E2E vs. integration runs against `tomori_test` (same lock file)."""

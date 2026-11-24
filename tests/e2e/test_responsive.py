@@ -16,7 +16,6 @@ from tests.e2e.conftest import (
     api_login,
     create_lighting_point,
     login,
-    select_option,
 )
 
 MOBILE: ViewportSize = {"width": 390, "height": 844}
@@ -232,10 +231,17 @@ def test_mobile_tabbar_navigation_works_with_touch_viewport(
     page.wait_for_url("**/inspection/new", timeout=20_000)
     assert page.get_by_test_id("inspection-pole-select").is_visible()
 
-    # 先测未展开下拉时的布局，再测选中后；`el-select__popper` 展开期间是 fixed 定位的
-    # 弹出层（属 Element Plus 内部节点，非页面布局），必须在关闭后测量真实文档宽度。
-    _assert_no_overflow(page, page.url)
-    select_option(page, "inspection-pole-select", "inspection-pole-option-SL-ZZ-JS-0001")
-    page.keyboard.press("Escape")
-    page.wait_for_timeout(500)
-    _assert_no_overflow(page, page.url)
+    # 1) 未展开下拉时先测一次基线（<= 390）
+    _assert_no_overflow(page, f"{page.url} [before-open]")
+
+    # 2) 展开 `el-select` 弹层态：直接断言 `scrollWidth <= 390`（移除 Escape 隔离）
+    page.get_by_test_id("inspection-pole-select").click()
+    option = page.get_by_test_id("inspection-pole-option-SL-ZZ-JS-0001")
+    option.wait_for(state="visible", timeout=10_000)
+    open_scroll_w = int(page.evaluate("() => document.documentElement.scrollWidth"))
+    assert open_scroll_w <= 390, f"el-select 展开态 scrollWidth={open_scroll_w} > 390"
+    _assert_no_overflow(page, f"{page.url} [popper-open]")
+
+    # 3) 选中选项后（不再按 Escape）仍不得溢出
+    option.click()
+    _assert_no_overflow(page, f"{page.url} [after-select]")
