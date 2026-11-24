@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import itertools
 import json
 import math
 import os
@@ -143,6 +144,11 @@ _VALID_FORMATS: Final[frozenset[str]] = frozenset({"auto", "yolo", "coco", "voc"
 #   「异名同图」（`test/105_jpg` 与 `train/POSTEEEEEES-CAIDOS-50-_jpg`）双重陷阱，
 #   盲目按 `.rf.` 前缀合并会把 `1,928` 个 pHash 独立簇误缩至 `1,450` 张。
 _VALID_RF_MODES: Final[frozenset[str]] = frozenset({"stem", "phash"})
+
+# 分层装箱枚举上限：`enum_groups`（多图组）最多枚举 `3^k` 种分配，截断到此规模防组合爆炸。
+_SPLIT_ENUM_LIMIT: Final[int] = 12
+# `occluded`（类 id=3）在 val/test 各自需达到的框数下限；仅当全库 `occluded` 达到其 2 倍时启用。
+_OCCLUDED_MIN_PER_SPLIT: Final[int] = 30
 
 
 @dataclass(frozen=True)
@@ -1143,8 +1149,22 @@ def _assign_group_splits(
     seed: int,
     allow_small_groups: bool,
     forbid_preaug_in_val_test: bool,
-) -> None:
-    """按 Union-Find（`video_id` ∪ `rf_orig_stem` ∪ `phash_cluster` ∪ `sha256`）分层切分."""
+    occluded_min_per_split: int = _OCCLUDED_MIN_PER_SPLIT,
+    enumeration_limit: int = _SPLIT_ENUM_LIMIT,
+) -> dict[str, Any]:
+    """组 + 单图混合的字典序三目标按类分层装箱（Union-Find 分组不变）.
+
+    字典序目标：
+      1. 硬约束——所有存在类别在 train/val/test 三集全非零；
+         且若全库 `occluded` 框数 `>= 2 * occluded_min_per_split`，
+         则要求 `occluded` 在 `val` 与 `test` 各 `>= occluded_min_per_split`
+         （迫使含 `occluded` 的大组落入不同集合）；
+      2. 主目标——最小化 `Σ|class_box_share - ratio|`（各类别框数占比偏差和）；
+      3. 次目标——最小化 `Σ|img_share - ratio|`；
+      4. 决胜——在满足硬约束下，倾向把含较多 `occluded` 的大组放入 `test`。
+
+    返回切分目标信息（`split_assignment` / `objective`），供 `prep_manifest.json` 落盘。
+    """
     n = len(samples)
     if n == 0:
         raise ValueError("清洗后无任何有效样本，无法切分")
@@ -1231,109 +1251,192 @@ def _assign_group_splits(
         )
 
     ratios = {"train": train_ratio, "val": val_ratio, "test": test_ratio}
-    split_imgs: dict[str, int] = {"train": 0, "val": 0, "test": 0}
-    split_cls_boxes: dict[str, Counter[int]] = {
-        "train": Counter(),
-        "val": Counter(),
-        "test": Counter(),
-    }
-    assigned: dict[int, str] = {}
+    splits_order: tuple[str, str, str] = ("train", "val", "test")
+    total_images = len(samples)
+    present_classes = {cid for cid, cnt in total_cls_boxes.items() if cnt > 0}
 
-    def _commit(g: _GroupMeta, sp: str) -> None:
-        assigned[g.gid] = sp
-        split_imgs[sp] += g.size
+    # --- 1) 基础状态：预增广组（`val_test_eligible=False`）全部锁入 `train` ---
+    base_imgs = {"train": 0, "val": 0, "test": 0}
+    base_cls: dict[str, Counter[int]] = {s: Counter() for s in splits_order}
+    for g in sorted(
+        (g for g in groups if not g.val_test_eligible),
+        key=lambda g: (-g.size, g.tie_key),
+    ):
+        base_imgs["train"] += g.size
         for cid, cnt in g.cls_boxes.items():
-            split_cls_boxes[sp][cid] += cnt
+            base_cls["train"][cid] += cnt
 
-    # 先锁定不可进 val/test 的预增广组至 train
-    for g in sorted(groups, key=lambda item: (-item.size, item.tie_key)):
-        if not g.val_test_eligible:
-            _commit(g, "train")
-
-    # 稀有类优先贪心分层装箱（从全库框数最少的类开始，让稀有类在 train/val/test 均匀覆盖）
-    classes_by_rarity = sorted(
-        (cid for cid, cnt in total_cls_boxes.items() if cnt > 0),
-        key=lambda cid: (total_cls_boxes[cid], cid),
+    # --- 2) 枚举池（多图组）与单图池 ---
+    # 枚举池按「含最稀有类框数 → 组大小」降序截断到 `_SPLIT_ENUM_LIMIT`。
+    rarest_cid = (
+        min(present_classes, key=lambda c: (total_cls_boxes[c], c)) if present_classes else 0
+    )
+    enum_groups = sorted(
+        (g for g in groups if g.val_test_eligible and g.size > 1),
+        key=lambda g: (-g.cls_boxes.get(rarest_cid, 0), -g.size, g.tie_key),
+    )[:_SPLIT_ENUM_LIMIT]
+    enum_gids = {g.gid for g in enum_groups}
+    # 单图池：所有可入 val/test 但未进枚举池的组（单图组 + 被截断的多图组），按稀有度加权排序。
+    single_groups = sorted(
+        (g for g in groups if g.val_test_eligible and g.gid not in enum_gids),
+        key=lambda g: (
+            -sum(
+                g.cls_boxes.get(cid, 0) / max(1, total_cls_boxes.get(cid, 1)) for cid in g.cls_boxes
+            ),
+            -g.size,
+            g.tie_key,
+        ),
     )
 
-    for cid in classes_by_rarity:
-        denom_cls = float(max(1, total_cls_boxes[cid]))
-        unassigned_with_cls = [
-            g for g in groups if g.gid not in assigned and g.cls_boxes.get(cid, 0) > 0
-        ]
-        unassigned_with_cls.sort(key=lambda g: (-g.cls_boxes[cid], -g.size, g.tie_key))
-        for rem_idx, g in enumerate(unassigned_with_cls):
-            candidates = ("train", "val", "test") if g.val_test_eligible else ("train",)
-            has_smaller = any(
-                og.val_test_eligible and og.size < g.size
-                for og in unassigned_with_cls[rem_idx + 1 :]
+    # --- 3) `occluded` 下限需求：全库 ≥ `2 * occluded_min_per_split` 时强制双集各 ≥ 该值 ---
+    min_occl = (
+        occluded_min_per_split if total_cls_boxes.get(3, 0) >= 2 * occluded_min_per_split else 0
+    )
+    occl_in_singles = sum(g.cls_boxes.get(3, 0) for g in single_groups)
+
+    def _greedy_fill(
+        imgs: dict[str, int],
+        cls: dict[str, Counter[int]],
+        out_assign: dict[int, str],
+    ) -> None:
+        """稀有度加权贪心：把单图池逐组分配到三集，使各类别框数占比最贴近 `ratio`."""
+        for g in single_groups:
+            best_sp = splits_order[0]
+            best_key: tuple[float, float] | None = None
+            for sp in splits_order:
+                d_cls = 0.0
+                for cid in g.cls_boxes:
+                    tot = total_cls_boxes[cid]
+                    if tot <= 0:
+                        continue
+                    before = abs(cls[sp][cid] / tot - ratios[sp])
+                    after = abs((cls[sp][cid] + g.cls_boxes[cid]) / tot - ratios[sp])
+                    d_cls += after - before
+                before_i = abs(imgs[sp] / total_images - ratios[sp])
+                after_i = abs((imgs[sp] + g.size) / total_images - ratios[sp])
+                key = (d_cls, after_i - before_i)
+                if best_key is None or key < best_key:
+                    best_key, best_sp = key, sp
+            out_assign[g.gid] = best_sp
+            imgs[best_sp] += g.size
+            for cid, cnt in g.cls_boxes.items():
+                cls[best_sp][cid] += cnt
+
+    def _deviation(cls: dict[str, Counter[int]], imgs: dict[str, int]) -> tuple[float, float]:
+        """返回 `(Σ|类框数占比 - ratio|, Σ|图数占比 - ratio|)`（百分点）."""
+        cdev = sum(
+            abs(cls[sp][c] / tot - ratios[sp]) * 100.0
+            for c, tot in total_cls_boxes.items()
+            if tot > 0
+            for sp in splits_order
+        )
+        idev = sum(abs(imgs[sp] / total_images - ratios[sp]) * 100.0 for sp in splits_order)
+        return cdev, idev
+
+    # --- 4) 枚举 `enum_groups` 全部 `3^k` 分配，字典序求最优 ---
+    k = len(enum_groups)
+    n_eval = n_feasible = 0
+    best_key: tuple[int, int, int, float, float, int] | None = None
+    best_combo: tuple[int, ...] | None = None
+    best_cls: dict[str, Counter[int]] = {}
+    best_assign: dict[int, str] = {}
+    for combo in itertools.product(range(3), repeat=k):
+        n_eval += 1
+        m_occl = [0, 0, 0]
+        for i, sp_idx in enumerate(combo):
+            m_occl[sp_idx] += enum_groups[i].cls_boxes.get(3, 0)
+        # occluded 可行性预检：val/test 各需 ≥min_occl 框（含单图池兜底）
+        if min_occl > 0:
+            need_v = max(0, min_occl - m_occl[1])
+            need_t = max(0, min_occl - m_occl[2])
+            if need_v + need_t > occl_in_singles:
+                continue
+        n_feasible += 1
+        imgs = dict(base_imgs)
+        cls: dict[str, Counter[int]] = {s: Counter(base_cls[s]) for s in splits_order}
+        out_assign: dict[int, str] = {}
+        for i, sp_idx in enumerate(combo):
+            sp = splits_order[sp_idx]
+            g = enum_groups[i]
+            out_assign[g.gid] = sp
+            imgs[sp] += g.size
+            for cid, cnt in g.cls_boxes.items():
+                cls[sp][cid] += cnt
+        _greedy_fill(imgs, cls, out_assign)
+        empty_splits = sum(1 for sp in splits_order if imgs[sp] == 0)
+        missing_cells = sum(
+            1 for c in present_classes for sp in splits_order if cls[sp].get(c, 0) == 0
+        )
+        hard_ok = (
+            empty_splits == 0
+            and missing_cells == 0
+            and (
+                min_occl == 0
+                or (cls["val"].get(3, 0) >= min_occl and cls["test"].get(3, 0) >= min_occl)
+            )
+        )
+        cdev, idev = _deviation(cls, imgs)
+        tie = cls["test"].get(3, 0) - cls["val"].get(3, 0)
+        key = (
+            empty_splits,
+            missing_cells,
+            0 if hard_ok else 1,
+            round(cdev, 4),
+            round(idev, 4),
+            -tie,
+        )
+        if best_key is None or key < best_key:
+            best_key, best_combo, best_cls, best_assign = (
+                key,
+                combo,
+                cls,
+                out_assign,
             )
 
-            def _cls_score(
-                sp: str,
-                *,
-                grp: _GroupMeta = g,
-                class_id: int = cid,
-                c_denom: float = denom_cls,
-                smaller_exists: bool = has_smaller,
-            ) -> tuple[int, int, float, float, float, float, str]:
-                cur_cls = split_cls_boxes[sp][class_id]
-                cur_cls_fill = cur_cls / (c_denom * ratios[sp])
-                post_cls_fill = (cur_cls + grp.cls_boxes[class_id]) / (c_denom * ratios[sp])
-                post_img_fill = (split_imgs[sp] + grp.size) / (
-                    float(max(1, total_images)) * ratios[sp]
-                )
-                overflow = 1 if (sp != "train" and post_img_fill > 1.8 and smaller_exists) else 0
-                return (
-                    overflow,
-                    0 if cur_cls == 0 else 1,
-                    round(cur_cls_fill, 6),
-                    round(post_cls_fill, 6),
-                    round(post_img_fill, 6),
-                    -ratios[sp],
-                    sp,
-                )
-
-            chosen = min(candidates, key=_cls_score)
-            _commit(g, chosen)
-
-    # 处理余下无框背景图组（或未分配组）
-    remaining = [g for g in groups if g.gid not in assigned]
-    remaining.sort(key=lambda g: (-g.size, g.tie_key))
-    for g in remaining:
-        candidates = ("train", "val", "test") if g.val_test_eligible else ("train",)
-        chosen = min(
-            candidates,
-            key=lambda sp: (
-                (split_imgs[sp] + g.size) / (float(max(1, total_images)) * ratios[sp]),
-                -ratios[sp],
-                sp,
-            ),
+    if best_combo is None:
+        raise RuntimeError(
+            "分层切分无可行解：在给定组原子性约束下无法满足「三集四类全非零"
+            + (f" 且 occluded 双集各 ≥{min_occl} 框」" if min_occl > 0 else "」")
         )
-        _commit(g, chosen)
 
-    # 兜底确保当可入 val/test 的独立组充足时，val 与 test 均非空
-    if len(eligible_groups) >= 3:
-        for missing_sp in ("val", "test"):
-            if split_imgs[missing_sp] > 0:
-                continue
-            donor_candidates = [
-                g
-                for g in eligible_groups
-                if assigned[g.gid] == "train"
-                and sum(1 for og in eligible_groups if assigned[og.gid] == "train") > 1
-            ]
-            if donor_candidates:
-                donor = min(donor_candidates, key=lambda g: (g.size, g.tie_key))
-                split_imgs["train"] -= donor.size
-                for cid, cnt in donor.cls_boxes.items():
-                    split_cls_boxes["train"][cid] -= cnt
-                _commit(donor, missing_sp)
-
+    # --- 5) 应用最优分配 ---
     for g in groups:
-        sp = assigned[g.gid]
+        sp = "train" if not g.val_test_eligible else best_assign.get(g.gid, "train")
         for m in g.members:
             m.split = sp
+
+    # --- 6) 上报切分目标信息 ---
+    split_assignment: dict[str, Any] = {
+        enum_groups[i].members[0].group_key: splits_order[combo_i]
+        for i, combo_i in enumerate(best_combo)
+    }
+    split_assignment["_single_groups"] = {
+        "train": sum(1 for g in single_groups if best_assign.get(g.gid) == "train"),
+        "val": sum(1 for g in single_groups if best_assign.get(g.gid) == "val"),
+        "test": sum(1 for g in single_groups if best_assign.get(g.gid) == "test"),
+    }
+    return {
+        "split_assignment": split_assignment,
+        "objective": {
+            "method": "group+single lexicographic stratified bin-packing",
+            "targets": {"train": train_ratio, "val": val_ratio, "test": test_ratio},
+            "hard_constraints": {
+                "all_present_classes_nonzero_in_each_split": True,
+                "occluded_min_per_split": min_occl,
+            },
+            "result": {
+                "hard_ok": bool(best_key is not None and best_key[2] == 0),
+                "empty_splits": best_key[0] if best_key else None,
+                "missing_class_cells": best_key[1] if best_key else None,
+                "class_box_deviation_pp": best_key[3] if best_key else None,
+                "image_deviation_pp": best_key[4] if best_key else None,
+                "occluded_boxes_val": best_cls["val"].get(3, 0),
+                "occluded_boxes_test": best_cls["test"].get(3, 0),
+                "combos_evaluated": n_eval,
+                "combos_feasible": n_feasible,
+            },
+        },
+    }
 
 
 def _materialize_file(src: Path, dst: Path, link_mode: str) -> None:
@@ -1572,7 +1675,7 @@ def prepare_dataset(cfg: DatasetPrepConfig) -> PrepResult:
         if s.is_preaugmented:
             stats_by_source[s.source_name].preaugmented_images += 1
 
-    _assign_group_splits(
+    split_info = _assign_group_splits(
         kept_samples,
         train_ratio=cfg.train_ratio,
         val_ratio=cfg.val_ratio,
@@ -1647,6 +1750,31 @@ def prepare_dataset(cfg: DatasetPrepConfig) -> PrepResult:
             split_class_images[s.split][TARGET_NAMES[cls_id]] += 1
         for cls_id, *_ in s.boxes:
             split_class_boxes[s.split][TARGET_NAMES[cls_id]] += 1
+
+    # 逐类别框数占比与目标比例偏差（供切分质量审计）
+    class_totals = {
+        cname: sum(split_class_boxes[sp][cname] for sp in ("train", "val", "test"))
+        for cname in TARGET_NAMES.values()
+    }
+    class_proportion_deviation: dict[str, dict[str, dict[str, Any]]] = {}
+    for cname, tot in class_totals.items():
+        if tot <= 0:
+            continue
+        entry: dict[str, dict[str, Any]] = {}
+        for sp, tgt in (
+            ("train", cfg.train_ratio),
+            ("val", cfg.val_ratio),
+            ("test", cfg.test_ratio),
+        ):
+            cnt = split_class_boxes[sp][cname]
+            share = cnt / tot
+            entry[sp] = {
+                "boxes": cnt,
+                "share": round(share, 4),
+                "target_share": tgt,
+                "deviation_pp": round(abs(share - tgt) * 100.0, 3),
+            }
+        class_proportion_deviation[cname] = entry
 
     data_yaml_path = _write_data_yaml(out_dir)
     manifest_payload: dict[str, Any] = {
@@ -1750,6 +1878,9 @@ def prepare_dataset(cfg: DatasetPrepConfig) -> PrepResult:
             }
             for sp in ("train", "val", "test")
         },
+        "class_proportion_deviation": class_proportion_deviation,
+        "split_assignment": split_info["split_assignment"],
+        "split_objective": split_info["objective"],
         "leakage_checks": leakage_checks,
     }
     manifest_path = out_dir / "prep_manifest.json"

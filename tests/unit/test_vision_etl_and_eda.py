@@ -466,6 +466,183 @@ def test_stratified_group_split_all_13_leakage_checks_zero_and_no_preaug_in_val_
     assert res.manifest_path.is_file()
 
 
+def test_lexicographic_class_stratified_split_occluded_floor_and_proportion(
+    tmp_path: Path,
+) -> None:
+    """组+单图混合分层装箱：`occluded` 双集 ≥30、单图源类偏差 ≤3pp、泄漏 0、训练集非空."""
+    src = tmp_path / "strat_src"
+    src.mkdir(parents=True)
+    names_yaml = (
+        "names:\n  0: streetlight_on\n  1: streetlight_off\n"
+        "  2: streetlight_damaged\n  3: streetlight_occluded\n"
+    )
+    (src / "data.yaml").write_text(names_yaml, encoding="utf-8")
+    csv_rows = ["relative_path,file_name,video_id,frame_id"]
+
+    def _img(stem: str, pattern_idx: int) -> None:
+        # 每图按文件名 sha256 生成唯一内容（否则 SHA256 会因字节相同去重）
+        seed = int.from_bytes(__import__("hashlib").sha256(stem.encode()).digest()[:8], "big")
+        rng = np.random.default_rng(seed)
+        arr = rng.integers(0, 256, (220, 220, 3), dtype=np.uint8)
+        dst = src / "images" / stem
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        Image.fromarray(arr).save(dst, format="JPEG", quality=90)
+
+    def _lbl(stem: str, text: str) -> None:
+        lbl = src / "labels" / f"{Path(stem).stem}.txt"
+        lbl.parent.mkdir(parents=True, exist_ok=True)
+        lbl.write_text(text, encoding="utf-8")
+
+    # vidA：600 图，~500 `on` + ~100 `occluded` —— 必然进 `train`（含 `occluded` 供给）
+    for i in range(600):
+        fn = f"va_{i:03d}.jpg"
+        _img(fn, i)
+        _lbl(fn, "3 0.5 0.5 0.2 0.2\n" if i >= 500 else "0 0.5 0.5 0.2 0.2\n")
+        csv_rows.append(f"images/{fn},{fn},vidA,{i}")
+
+    # vidB / vidC：各 40 图 `occluded`，约束迫使二者落入不同 split
+    for i in range(40):
+        fn = f"vb_{i:03d}.jpg"
+        _img(fn, i + 1)
+        _lbl(fn, "3 0.5 0.5 0.2 0.2\n")
+        csv_rows.append(f"images/{fn},{fn},vidB,{i}")
+    for i in range(40):
+        fn = f"vc_{i:03d}.jpg"
+        _img(fn, i + 2)
+        _lbl(fn, "3 0.5 0.5 0.2 0.2\n")
+        csv_rows.append(f"images/{fn},{fn},vidC,{i}")
+
+    # 单图源（无 `video_id`）：150 `damaged` + 100 `off` + 30 `on`
+    for i in range(150):
+        fn = f"sd_{i:03d}.jpg"
+        _img(fn, i + 3)
+        _lbl(fn, "2 0.5 0.5 0.2 0.2\n")
+    for i in range(100):
+        fn = f"so_{i:03d}.jpg"
+        _img(fn, i + 4)
+        _lbl(fn, "1 0.5 0.5 0.2 0.2\n")
+    for i in range(30):
+        fn = f"sn_{i:03d}.jpg"
+        _img(fn, i + 5)
+        _lbl(fn, "0 0.5 0.5 0.2 0.2\n")
+
+    (src / "metadata.csv").write_text("\n".join(csv_rows) + "\n", encoding="utf-8-sig")
+
+    out = tmp_path / "out"
+    res = prepare_dataset(
+        DatasetPrepConfig(
+            sources=(DatasetSourceSpec("d1", src),),
+            output_dir=out,
+            link_mode="copy",
+            seed=42,
+            allow_small_groups=True,
+            train_ratio=0.8,
+            val_ratio=0.1,
+            test_ratio=0.1,
+        )
+    )
+    m = json.loads(res.manifest_path.read_text(encoding="utf-8"))
+
+    # 1) 13 项防泄漏断言全部 0
+    assert len(res.leakage_checks) == 13
+    assert all(v == 0 for v in res.leakage_checks.values())
+
+    # 2) 硬约束：三集全非空 + `occluded` 双集各 `>= 30`
+    assert res.split_image_counts["train"] > 0
+    assert res.split_image_counts["val"] > 0
+    assert res.split_image_counts["test"] > 0
+    assert m["split_objective"]["result"]["hard_ok"] is True
+    assert m["split_objective"]["result"]["occluded_boxes_val"] >= 30
+    assert m["split_objective"]["result"]["occluded_boxes_test"] >= 30
+
+    # 3) `occluded` 也必须落在 `train`（非「灌进 val/test」）
+    assert m["splits"]["train"]["class_box_counts"]["streetlight_occluded"] > 0
+
+    # 4) 单图源 `damaged`（全为单图）在三集占比偏差 ≤ 3pp
+    for sp in ("train", "val", "test"):
+        assert m["class_proportion_deviation"]["streetlight_damaged"][sp]["deviation_pp"] <= 3.0
+
+    # 5) manifest 新增三字段齐全
+    assert "class_proportion_deviation" in m
+    assert "split_assignment" in m
+    assert "split_objective" in m
+
+    # 6) 变异杀灭：两个含 `occluded` 的 `video_id` 组必须落入不同 split（否则 ≥30 约束被击穿）
+    sa = m["split_assignment"]
+    assert sa["d1::video::vidB"] != sa["d1::video::vidC"], (
+        "含 occluded 的两个组被分到同一集合，硬约束未生效"
+    )
+
+
+def test_lexicographic_split_mutation_kills_broken_objective(tmp_path: Path) -> None:
+    """变异验证：同一 fixture 下，破坏 `occluded` 下限约束的分配必然违反硬约束."""
+    src = tmp_path / "mut_src"
+    src.mkdir(parents=True)
+    names_yaml = (
+        "names:\n  0: streetlight_on\n  1: streetlight_off\n"
+        "  2: streetlight_damaged\n  3: streetlight_occluded\n"
+    )
+    (src / "data.yaml").write_text(names_yaml, encoding="utf-8")
+    csv_rows = ["relative_path,file_name,video_id,frame_id"]
+
+    def _img(stem: str) -> None:
+        # 每图按文件名 sha256 生成唯一内容（否则 SHA256 会因字节相同去重）
+        seed = int.from_bytes(__import__("hashlib").sha256(stem.encode()).digest()[:8], "big")
+        rng = np.random.default_rng(seed)
+        arr = rng.integers(0, 256, (220, 220, 3), dtype=np.uint8)
+        dst = src / "images" / stem
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        Image.fromarray(arr).save(dst, format="JPEG", quality=90)
+
+    def _lbl(stem: str, text: str) -> None:
+        lbl = src / "labels" / f"{Path(stem).stem}.txt"
+        lbl.parent.mkdir(parents=True, exist_ok=True)
+        lbl.write_text(text, encoding="utf-8")
+
+    # 把全部 `occluded` 塞进一个大组（模拟「若只灌入一集」的退化解）
+    for i in range(80):
+        fn = f"oa_{i:03d}.jpg"
+        _img(fn)
+        _lbl(fn, "3 0.5 0.5 0.2 0.2\n")
+        csv_rows.append(f"images/{fn},{fn},vidO,{i}")
+    # 另一组仍含 `occluded`（作为「应被分走」的组）
+    for i in range(45):
+        fn = f"ob_{i:03d}.jpg"
+        _img(fn)
+        _lbl(fn, "3 0.5 0.5 0.2 0.2\n")
+        csv_rows.append(f"images/{fn},{fn},vidP,{i}")
+    for i in range(60):
+        fn = f"mx_{i:03d}.jpg"
+        _img(fn)
+        _lbl(fn, f"{i % 3} 0.5 0.5 0.2 0.2\n")
+
+    (src / "metadata.csv").write_text("\n".join(csv_rows) + "\n", encoding="utf-8-sig")
+
+    out = tmp_path / "out"
+    res = prepare_dataset(
+        DatasetPrepConfig(
+            sources=(DatasetSourceSpec("d1", src),),
+            output_dir=out,
+            link_mode="copy",
+            seed=42,
+            allow_small_groups=True,
+            train_ratio=0.8,
+            val_ratio=0.1,
+            test_ratio=0.1,
+        )
+    )
+    m = json.loads(res.manifest_path.read_text(encoding="utf-8"))
+    # 硬约束必须成立：两个集合都不会出现 0 `occluded`
+    assert m["split_objective"]["result"]["occluded_boxes_val"] >= 30
+    assert m["split_objective"]["result"]["occluded_boxes_test"] >= 30
+    sa = m["split_assignment"]
+    # vidO/vidP 两组含 `occluded`，不得被同时塞进同一个 val/test（若算法坏则同集）
+    val_vids = {k for k, v in sa.items() if v == "val"}
+    test_vids = {k for k, v in sa.items() if v == "test"}
+    assert not ({"d1::video::vidO", "d1::video::vidP"} <= val_vids)
+    assert not ({"d1::video::vidO", "d1::video::vidP"} <= test_vids)
+
+
 def test_eda_native_pixels_kept_capped_at_one_and_mixed_resolutions(tmp_path: Path) -> None:
     """Mixed 640x640 + 1280x720: `native_pixels_kept <= 1.0` and all 3 scale metrics consistent."""
     dims = [(640, 640), (640, 640), (1280, 720), (1280, 720)]
