@@ -1,0 +1,197 @@
+:root {
+  --tomori-bg: #f5f7fa;
+  --tomori-surface: #ffffff;
+  --tomori-border: #dcdfe6;
+  --tomori-border-focus: #409eff;
+  --tomori-text: #303133;
+  --tomori-text-secondary: #606266;
+  --tomori-text-muted: #909399;
+  --tomori-danger: #f56c6c;
+  --tomori-warning: #e6a23c;
+  --tomori-success: #67c23a;
+  --tomori-primary: #409eff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+  background-color: var(--tomori-bg);
+  color: var(--tomori-text);
+  font-family: 'PingFang SC', 'Microsoft YaHei', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.tomori-input,
+.tomori-textarea,
+.tomori-select {
+  width: 100%;
+  border: 1px solid var(--tomori-border);
+  border-radius: 4px;
+  background-color: var(--tomori-surface);
+  color: var(--tomori-text);
+  font-size: 14px;
+  line-height: 1.5;
+  padding: 8px 12px;
+  transition: border-color 0.2s;
+  outline: none;
+  font-family: inherit;
+}
+
+.tomori-input:focus,
+.tomori-textarea:focus,
+.tomori-select:focus {
+  border-color: var(--tomori-border-focus);
+}
+
+.tomori-input:disabled,
+.tomori-textarea:disabled,
+.tomori-select:disabled {
+  background-color: #f5f7fa;
+  color: #a8abb2;
+  cursor: not-allowed;
+}
+
+.tomori-textarea {
+  min-height: 80px;
+  resize: vertical;
+}
+
+.tomori-checkbox-label {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1.5;
+  user-select: none;
+}
+
+.tomori-checkbox-label.is-disabled {
+  cursor: not-allowed;
+  color: #a8abb2;
+}
+
+.tomori-checkbox {
+  width: 16px;
+  height: 16px;
+  margin-top: 3px;
+  accent-color: var(--tomori-primary);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.tomori-checkbox:disabled {
+  cursor: not-allowed;
+}
+
+.tomori-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--tomori-border);
+  border-radius: 4px;
+  background-color: var(--tomori-surface);
+  color: var(--tomori-text);
+  font-size: 14px;
+  line-height: 1;
+  padding: 9px 15px;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-family: inherit;
+}
+
+.tomori-btn:hover:not(:disabled) {
+  border-color: #c6e2ff;
+  background-color: #ecf5ff;
+  color: var(--tomori-primary);
+}
+
+.tomori-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.tomori-btn--primary {
+  background-color: var(--tomori-primary);
+  border-color: var(--tomori-primary);
+  color: #ffffff;
+}
+
+.tomori-btn--primary:hover:not(:disabled) {
+  background-color: #66b1ff;
+  border-color: #66b1ff;
+  color: #ffffff;
+}
+
+.tomori-btn--danger {
+  background-color: var(--tomori-danger);
+  border-color: var(--tomori-danger);
+  color: #ffffff;
+}
+
+.tomori-btn--danger:hover:not(:disabled) {
+  background-color: #f78989;
+  border-color: #f78989;
+  color: #ffffff;
+}
+
+.tomori-btn--success {
+  background-color: var(--tomori-success);
+  border-color: var(--tomori-success);
+  color: #ffffff;
+}
+
+.tomori-btn--success:hover:not(:disabled) {
+  background-color: #85ce61;
+  border-color: #85ce61;
+  color: #ffffff;
+}
+
+.tomori-btn--warning {
+  background-color: var(--tomori-warning);
+  border-color: var(--tomori-warning);
+  color: #ffffff;
+}
+
+.tomori-btn--warning:hover:not(:disabled) {
+  background-color: #ebb563;
+  border-color: #ebb563;
+  color: #ffffff;
+}
+
+.tomori-field-error {
+  margin-top: 4px;
+  color: var(--tomori-danger);
+  font-size: 12px;
+}
+
+.tomori-page-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.tomori-page-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.tomori-card {
+  background: var(--tomori-surface);
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
