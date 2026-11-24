@@ -63,16 +63,52 @@ cp .env.example .env
   - `MAX_UPLOAD_SIZE_MB=15`：单文件上限 15 MiB，与视觉错误码契约「单文件 > 15 MiB => `413 IMAGE_SIZE_EXCEEDED`」一致（现代手机原图常 8–14 MiB，10 MiB 会误拒合规原图）。
   - `YOLO_WEIGHTS_PATH=./vision/weights/best.pt`：远端 GPU 服务器训练完成后回传至本地的模型权重路径。
   - `YOLO_DEVICE=cpu`：无 GPU 的本地推理环境使用 `cpu`；本地具备可用 CUDA GPU 时可设为 `0`（视觉开发与训练按 `D-06` 在远端 GPU 执行，不走此变量）。
-  - `YOLO_IMG_SIZE=1024`：**必须与回传模型 `metrics.json` 中的 `imgsz` 完全相等**（`export(..., dynamic=False)` 已把输入尺寸固化进 ONNX 图），启用门禁见 §6.6。
+  - `YOLO_IMG_SIZE=1280`：**必须与回传模型 `metrics.json` 中的 `imgsz` 完全相等**（`2×640`，`export(..., dynamic=False)` 已把输入尺寸固化进 ONNX 图 `[1, 3, 1280, 1280]`），启用门禁见 §6.6。
   - `YOLO_INFERENCE_MODE=auto`：`auto` 允许自定义权重缺失时回退基线并如实标注；`strict_custom` 绝不回退，缺失自定义权重时健康检查显式报未就绪（上线检查项见 §6.6；互斥 `503` 错误契约见 `docs/API.md` §3.4 & `docs/DESIGN.md` §5.2）。
   - `YOLO_AUTOINSTALL=False`：禁止 Ultralytics 在推理或导出期静默触发 `uv`/`pip` 自动装包（`docs/DESIGN.md` §5.3；官方出处 `https://docs.ultralytics.com/modes/export/` 与 `ultralytics==8.4.216` `ultralytics/utils/__init__.py`）。
-- **5 文档体系交叉引用**（阶段一定稿）：
+- **5 文档体系交叉引用**（阶段一定稿 + 阶段二 `D-28` 同步）：
   - `docs/DESIGN.md`：架构/单包目录/`pyproject.toml` `[project.optional-dependencies] vision`（§1.1–§1.2）、17 表 Schema 与异步迁移（§4）、视觉管线/昼夜判定/`D-30`/`V1–V3`/`D-29` 数据集元数据表（§5.1–§5.3）、质量门禁（§6.1）。
   - `docs/REQUIREMENTS.md`：五项核心红线 `N1–N5`（§5）、`V1–V3` 与 `D-18`/`D-29`/`D-30`/`D-31` 智能及数据集边界（§6）。
   - `docs/API.md`：`POST /tickets/ai-candidates` 媒体上传顺序与错误映射（§3.3 `413 IMAGE_SIZE_EXCEEDED`、§3.4 `503 VISION_*`、§3.5 两个 `415` 分界、§5 处理顺序；视觉降级契约 `D1–D3` 见 `docs/DESIGN.md` §5.2）。
-  - `docs/DECISION.md`：`D-01`（远端 SSH）、`D-06`（只用 `yolo26s.pt`）、`D-10`（PG 17.12）、`D-28`（`imgsz=1024`）、`D-29`（个人项目直接使用数据集）、`D-30`（`streetlight_on` 回传参照）、`D-32`（单根包）。
+  - `docs/DECISION.md`：`D-01`（远端 SSH）、`D-06`（只用 `yolo26s.pt`）、`D-10`（PG 17.12）、`D-28`（`imgsz=1280`）、`D-29`（个人项目直接使用数据集）、`D-30`（`streetlight_on` 回传参照）、`D-32`（单根包）。
+  - `docs/TRAIN.md`：远端 YOLO26s@1280 训练指南（`D1` EDA、AutoBatch `batch=8`、`epochs=500 / patience=20`、`--mosaic-polish-epochs` 精修及 ONNX 导出契约）。
 
-> 注意：`.env`、`.env.local`、`uploads/`、`*.pt`、`*.onnx`、`vision/datasets/` 与 `.team/` 均不入 git，严禁将真实凭据、大体积图片或权重文件提交至仓库。
+> 注意：`.env`、`.env.local`、`uploads/`、`*.pt`、`*.onnx`、`*.egg-info/`、`vision/weights/`、`vision/datasets/`、`vision/runs/` 与 `.team/` 均不入 git，严禁将真实凭据、大体积图片或权重文件提交至仓库。
+
+### 3.1 本地应用启动、数据库迁移与质量门禁（`src layout`）
+
+项目采用 **`src layout` 单包**（包名 `tomori`，源根 `src/tomori/`，由 `uv_build` 可编辑安装进 `.venv`）：
+
+- **同步依赖**：
+  - 纯后端开发：`uv sync`
+  - 含视觉推理/训练依赖：`uv sync --extra vision`
+  - 包导入自检：`uv run python -c "import tomori"`
+- **Alembic 数据库迁移**（`alembic.ini` 位于仓库根，`sqlalchemy.url` 留空由 `env.py` 从 `Settings` 注入）：
+  ```bash
+  uv run alembic -c alembic.ini upgrade head
+  uv run alembic -c alembic.ini current
+  uv run alembic -c alembic.ini check
+  ```
+  > **已知预期告警登记（非缺陷、非回归）**：执行 `alembic check`（以及 autogenerate 检查）时会输出如下 `SAWarning`：
+  > ```text
+  > SAWarning: Cannot correctly sort tables; there are unresolvable cycles between tables "acceptance_records, dispatch_records, repair_processes, rework_orders", which is usually caused by mutually dependent foreign key constraints.  Foreign key constraints involving these tables will not be considered; this warning may raise an error in a future release.
+  > ```
+  > 这是本项目**故意不在 ORM 层使用 `use_alter=True`**（避免 Alembic issue `#326/#387/#626` 在 `op.create_table` 时静默跳过外键建库）而改用迁移两段式 Scheme B（`0001` 建表 + `0003` `op.create_foreign_key` 补齐循环 FK）的已知代价；只要结尾返回 `No new upgrade operations detected.` 且退出码为 `0` 即属正常通过，CI/人工核查不得误判为回归。
+- **FastAPI 后端启动**（`127.0.0.1` 隔离绑定）：
+  ```bash
+  # 开发进程（18141）
+  uv run uvicorn tomori.main:app --host 127.0.0.1 --port 18141
+
+  # E2E 隔离窗口（18142；须先执行 ./deploy/stack-guard.sh claim-e2e --owner tester 且指向 E2E_DATABASE_URL）
+  uv run uvicorn tomori.main:app --host 127.0.0.1 --port 18142
+  ```
+- **Python 静态门禁与测试（三者正交，必须独立运行，`docs/team/TEAM.md` §6.5）**：
+  ```bash
+  uv run ruff check src tests
+  uv run ruff format --check src tests
+  uv run mypy src/tomori
+  uv run pytest tests/unit
+  ```
 
 ---
 
@@ -159,7 +195,7 @@ docker compose -f compose.yaml down -v
 
 - 本系统视觉能力仅针对**静态巡查图片**进行公共照明故障检测（Ultralytics YOLO26 目标检测/故障分类，不接实时监控或远程灯控；安全边界 `V1–V3`、红线 `N1–N5` 与 `D-30`/`D-31` 见 `docs/DESIGN.md` §5.1–§5.2 及 `docs/REQUIREMENTS.md` §5–§6）。
   > 出处：Ultralytics 官方模型文档 https://docs.ultralytics.com/models/yolo26 （「released January 2026」，Detection 行列出 `yolo26n/s/m/l/x.pt`）；本项目锁定的 `ultralytics==8.4.216`（`docs/DESIGN.md` §1.2）内含 `ultralytics/cfg/models/26/yolo26.yaml`。核实记录见 `.team/notes/research/yolo26-official-sources.md`。
-- **开发与训练全部在远端 GPU 服务器上执行**；本地研发机与业务后端仅负责**数据集打包上传 → 校验回传 `best.pt` / `best_e2e.onnx` 权重 → 本地进程内 `import vision` 集成推理**（`docs/DESIGN.md` §5.3）。
+- **开发与训练全部在远端 GPU 服务器上执行**；本地研发机与业务后端仅负责**数据集打包上传 → 校验回传 `best.pt` / `best_e2e.onnx` 权重 → 本地进程内 `import tomori.vision`（`src/tomori/vision/`）集成推理**（`docs/DESIGN.md` §5.3）。
 - 用户已裁决（`D-06`）：「**明确只用 yolo26s。没有本地冒烟这一说，以后必须在远程服务器上跑开发和训练。推理才会在本地跑。**」
   - **在远端做**：环境初始化、数据集拉取与清洗（`D-29 ✅`）、视觉代码开发、训练、ONNX 导出（`nms=False`）、离线评估。
   - **在本地做**：权重哈希校验、启用门禁（§6.6）、CPU/CUDA 推理验证与 FastAPI 联调。
@@ -172,10 +208,10 @@ docker compose -f compose.yaml down -v
 | 项目 | 实测值 | 结论 |
 |---|---|---|
 | GPU | `RTX 4080 SUPER` / `32760 MiB` | 32G 档（§6.4 只用 32G 分档） |
-| 驱动 / 算力 | `595.71.05`；算力 `8.9`；CUDA toolkit `12.8` | `torch 2.8.0+cu128` 匹配 |
-| 存储 | `/root/autodl-tmp` **230G（88G 可用）** `/dev/md0` xfs 可写；`/autodl-fs/data` 200G 空、可写；`/autodl-pub` 只读 | **统一落盘 `/root/autodl-tmp/tomori/`**（见 §6.1.2） |
+| 驱动 / CUDA / PyTorch | `595.71.05`；算力 `8.9`；`nvidia-smi` CUDA **`13.2`** | `uv` 隔离 venv 实测解析 **`torch 2.15.0+cu132`**（`task-72`；注：base conda 旧有 `torch 2.8.0+cu128`，新 venv 不继承） |
+| 存储 | `/root/autodl-tmp` **230G（88G 可用，部署前）** `/dev/md0` xfs 可写；`/autodl-fs/data` 200G 空、可写；`/autodl-pub` 只读 | **统一落盘 `/root/autodl-tmp/tomori/`**（见 §6.1.2） |
 | 根分区 | `overlay 30G`，已用 23G，**余 7.8G** | **约定：根分区零增长**，所有 uv 数据/venv/数据/权重一律不放根分区 |
-| Python | 系统 `3.10.12`；`/root/miniconda3` 下 `3.12.3` | 用 `uv` 托管 `3.12`（见 §6.1.2） |
+| Python | 系统 `3.10.12`；`/root/miniconda3` 下 `3.12.3` | 优先 `/root/.local/bin/uv python install 3.12`；GitHub 超时时回退 `--python /root/miniconda3/bin/python3`（`task-72` 已实证可用） |
 | 包管理 | **`uv 0.13.7` 已装**于 `/root/.local/bin/uv`（**不在非交互 SSH 的 `PATH` 中，须用绝对路径**）；`conda 24.4.0` 亦已装 | **无需安装 uv**（注：早期探测报「无 uv/无 conda」为非交互 `PATH` 缺项导致的误报，已更正） |
 | 网络 | PyPI/清华/阿里镜像均 200；GitHub 不稳定；HuggingFace 超时、`hf-mirror` 200 | 用 `HF_ENDPOINT` + 必要时的 `UV_*_MIRROR`（见 §6.1.2） |
 
@@ -199,9 +235,10 @@ docker compose -f compose.yaml down -v
 └── weights/     # yolo26s.pt 底模
 ```
 
-**环境变量**（写进远端 `~/.bashrc`，`tmux` 会话自然继承）：
+**环境变量**（写入 `/root/autodl-tmp/tomori/env.sh`，远端交互/脚本执行前统一 `source /root/autodl-tmp/tomori/env.sh`）：
 
 ```bash
+export PATH="/root/.local/bin:/root/autodl-tmp/tomori/bin:$PATH"
 export UV_CACHE_DIR=/root/autodl-tmp/tomori/cache/uv
 export UV_PYTHON_INSTALL_DIR=/root/autodl-tmp/tomori/python
 export UV_TOOL_DIR=/root/autodl-tmp/tomori/tools
@@ -209,6 +246,7 @@ export UV_PROJECT_ENVIRONMENT=/root/autodl-tmp/tomori/venv
 export UV_PYTHON_BIN_DIR=/root/autodl-tmp/tomori/bin
 export HF_HOME=/root/autodl-tmp/tomori/hf
 export HF_ENDPOINT=https://hf-mirror.com
+export HF_HUB_DISABLE_XET=1
 export YOLO_CONFIG_DIR=/root/autodl-tmp/tomori/config
 export YOLO_AUTOINSTALL=False
 ```
@@ -253,18 +291,18 @@ curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="/root/autodl-tm
 | **SSH 接入** | `GPU_SSH_USER` | **`root`**（`uid=0`） | 实测登录身份 |
 | **SSH 接入** | 认证方式 | **key-based 免密**（`BatchMode=yes` 零交互通过） | 无需口令 / `ssh-agent` 前置 |
 | **硬件环境** | GPU 型号与数量 | **`NVIDIA GeForce RTX 4080 SUPER` × 1，`32760 MiB`** | 按 32G 档选 `batch` |
-| **硬件环境** | 驱动 / CUDA | 驱动 `595.71.05`；toolkit `12.8`；算力 `8.9` | 用 `cu128` wheel（已预装 torch） |
+| **硬件环境** | 驱动 / CUDA / Torch | 驱动 `595.71.05`；**CUDA `13.2`**；算力 `8.9` | 隔离 `uv` venv 安装 **`torch 2.15.0+cu132`**（`task-72` 实测） |
 | **存储路径** | 落盘根目录 | **`/root/autodl-tmp/tomori/`** | 见 §6.1.2；230G，根分区零增长 |
 | **存储路径** | 数据集目录 | **`/root/autodl-tmp/tomori/datasets/`** | |
 | **存储路径** | 训练输出目录 | **`/root/autodl-tmp/tomori/runs/`** | 存 `weights/best.pt`、`results.csv` |
 | **存储路径** | 底模目录 | **`/root/autodl-tmp/tomori/weights/`** | `yolo26s.pt` = 20,422,725 B |
-| **网络与源** | PyPI | 官方源与清华/阿里镜像**均可达** | 可选加速：`UV_DEFAULT_INDEX`（**非**弃用的 `UV_INDEX_URL`） |
-| **网络与源** | HuggingFace | 直连**超时**；`hf-mirror.com` 可达 | `HF_ENDPOINT=https://hf-mirror.com` |
-| **网络与源** | 底模下载 | GitHub releases **不稳定** | **首选：本地下载后 `rsync` 上传**；见 §6.4 |
+| **网络与源** | PyPI | 官方源与清华/阿里镜像**均可达** | 可选加速：`UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple`（`--frozen` 仍核验 `uv.lock` hash） |
+| **网络与源** | HuggingFace | 直连超时；`hf-mirror` 多小文件易 `429` | 大量小文件仓库改用 **`GIT_LFS_SKIP_SMUDGE=1 git clone` + LFS batch API + `aria2c -j 16`**（见 §6.4.0） |
+| **网络与源** | 底模下载 | `source /etc/network_turbo` 后可达 GitHub（实测 `60.1 MB/s`） | 远端学术加速失败时回退本地下载后 `rsync` 上传；见 §6.4.2 |
 
 ### 6.3 远端训练环境初始化规程
 
-**前提**：§6.1.2 的 9 个环境变量已写入远端 `~/.bashrc`。
+**前提**：§6.1.2 的环境变量已写入 `/root/autodl-tmp/tomori/env.sh`（全部落盘于 `/root/autodl-tmp/tomori/`）。
 
 1. **配置本地 `~/.ssh/config` 别名**（推荐 `tomori-gpu`）：
    ```
@@ -283,116 +321,143 @@ curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="/root/autodl-tm
    ssh tomori-gpu "mkdir -p /root/autodl-tmp/tomori/{repo,venv,cache/uv,python,tools,config,hf,datasets,runs,weights,bin}"
    ```
 
-3. **安装托管 Python 3.12**（系统 `3.10.12` 不满足 `requires-python >= 3.12`）：
+3. **准备 Python 3.12 与同步代码并安装 `[project.optional-dependencies] vision` 虚拟环境**（同步 `pyproject.toml`、`uv.lock`、`.python-version`、`README.md`、`src/` 至 `/root/autodl-tmp/tomori/repo/`；venv 落在 `UV_PROJECT_ENVIRONMENT`，**不建 `repo/.venv`**）：
    ```bash
-   ssh tomori-gpu "/root/.local/bin/uv python install 3.12 && /root/.local/bin/uv python list --only-installed"
+   # 先尝试 uv 托管 Python 3.12；若 GitHub standalone 45s 超时则回退 --python /root/miniconda3/bin/python3（3.12.3）
+   ssh tomori-gpu "source /root/autodl-tmp/tomori/env.sh && cd /root/autodl-tmp/tomori/repo && \
+     UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple \
+     /root/.local/bin/uv sync --extra vision --frozen --python /root/miniconda3/bin/python3"
    ```
-   > `uv` **已预装**（`0.13.7`）但不在非交互 `PATH` 中，用绝对路径调用。安装目录由 `UV_PYTHON_INSTALL_DIR` 指到 `/root/autodl-tmp/tomori/python`。
+   > **单根包 `D-32` + `src layout` 依据（`docs/DESIGN.md` §1.1–§1.2）**：仓库根仅有一份 `pyproject.toml`（`uv_build` + `module-root = "src"`）+ `uv.lock`，纯后端仅跑 `uv sync`；**远端视觉开发/训练必须带 `--extra vision`** 以安装 `ultralytics==8.4.216`、`opencv-python-headless`（`[tool.uv] override-dependencies` 已屏蔽 `opencv-python` GUI 轮子）、`onnxruntime`、`onnx`、`onnxslim` 与 `torch 2.15.0+cu132`。**根分区零增长**是验收点：完成后执行 `df -h /` 确认 `Avail` 保持 `7.8G` 未下降。
 
-4. **克隆代码并安装 `[project.optional-dependencies] vision` 虚拟环境**（venv 落在 `UV_PROJECT_ENVIRONMENT` 指定的路径，**不建 `repo/.venv`**）：
+4. **绑定 Ultralytics 目录设置、关闭 `sync` 防 `sentry-sdk 3.0.0` 崩溃并验证 CUDA 可见性**：
+   > ⚠️ **已实证坑（`task-72`）**：`fastapi[standard]` → `fastapi-cloud-cli` 会拉入 `sentry-sdk==3.0.0`，该版本删除了 `include_local_variables` 参数；而 `ultralytics==8.4.216`（`ultralytics/utils/__init__.py:1544`）在 CLI 入口调 `set_sentry()` 时会传入 `include_local_variables=False`，导致初次直接运行 `yolo settings` 抛 `TypeError: Unknown option 'include_local_variables'` 崩溃。
+   > **正确修法（严禁改动锁定的 `sentry-sdk` / `ultralytics` 包版本）**：先让 `$YOLO_CONFIG_DIR/Ultralytics/settings.json` 生成并将 `"sync"` 置为 `false`（命中 `set_sentry()` L1504 的第一个早退条件 `not SETTINGS["sync"]: return`），同时写入三个落盘目录：
    ```bash
-   ssh tomori-gpu "cd /root/autodl-tmp/tomori/repo && /root/.local/bin/uv sync --extra vision --python 3.12"
+   ssh tomori-gpu 'source /root/autodl-tmp/tomori/env.sh && /root/autodl-tmp/tomori/venv/bin/python -c "
+import json, pathlib
+from ultralytics.utils import SETTINGS
+p = pathlib.Path(\"/root/autodl-tmp/tomori/config/Ultralytics/settings.json\")
+d = json.loads(p.read_text(encoding=\"utf-8\")) if p.exists() else dict(SETTINGS)
+d.update({\"sync\": False, \"datasets_dir\": \"/root/autodl-tmp/tomori/datasets\", \"weights_dir\": \"/root/autodl-tmp/tomori/weights\", \"runs_dir\": \"/root/autodl-tmp/tomori/runs\"})
+p.write_text(json.dumps(d, indent=2) + \"\n\", encoding=\"utf-8\")
+" && /root/autodl-tmp/tomori/venv/bin/yolo settings && /root/autodl-tmp/tomori/venv/bin/yolo checks'
+   ssh tomori-gpu "source /root/autodl-tmp/tomori/env.sh && /root/autodl-tmp/tomori/venv/bin/python -c 'import torch, ultralytics, cv2, onnxruntime, tomori.vision; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0), round(torch.cuda.get_device_properties(0).total_memory/1024**3,1), ultralytics.__version__, cv2.__version__, onnxruntime.__version__)'"
    ```
-   > **单根包 `D-32` 依据（`docs/DESIGN.md` §1.1–§1.2）**：仓库根仅有一份 `pyproject.toml` + `uv.lock`，纯后端仅跑 `uv sync`；**远端视觉开发/训练必须带 `--extra vision`** 以安装 `ultralytics==8.4.216`、`opencv-python-headless`、`onnxruntime` 与 `torch`。**根分区零增长**是验收点：完成后执行 `df -h /` 确认 `Avail` 未明显下降。
-   > 若导出 ONNX 时启用了 `simplify=True`（Ultralytics 默认开启）且 `YOLO_AUTOINSTALL=False` 阻止静默装包，须提前在 `pyproject.toml`（或 dev/vision 依赖）中显式包含 `onnx`、`onnxslim` 等导出所需包。
+   > 依据 `https://docs.ultralytics.com/usage/settings/`：`yolo settings` 将持久配置写入 `$YOLO_CONFIG_DIR/Ultralytics/settings.json`（不写根分区 `~/.config`）。
+   > **预期输出说明**：`yolo checks` 中 `opencv-python ❌ (not installed)` 为 `[tool.uv] override-dependencies` 屏蔽 GUI 轮子后的**预期结果**（`cv2` 由 `opencv-python-headless==5.1.0.95` 提供，实测正常）；**严禁额外补装 `opencv-python`**。
 
-5. **绑定 Ultralytics 目录设置并验证 CUDA 可见性**：
-   ```bash
-   ssh tomori-gpu "source ~/.bashrc && /root/autodl-tmp/tomori/venv/bin/yolo settings \
-     datasets_dir=/root/autodl-tmp/tomori/datasets \
-     weights_dir=/root/autodl-tmp/tomori/weights \
-     runs_dir=/root/autodl-tmp/tomori/runs"
-   ssh tomori-gpu "source ~/.bashrc && /root/autodl-tmp/tomori/venv/bin/python -c 'import torch, ultralytics; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0), round(torch.cuda.get_device_properties(0).total_memory/1024**3,1), ultralytics.__version__)'"
-   ```
-   > 依据 `https://docs.ultralytics.com/usage/settings/`：`yolo settings` 将持久配置写入 `$YOLO_CONFIG_DIR/Ultralytics/settings.json`（不写根分区 `~/.config`）。现 conda base 已有 `torch 2.8.0+cu128`，但**新的 uv 虚拟环境不继承它**，由 `uv sync --extra vision` 独立安装；不推荐使用 `--system-site-packages`。
+5. **验收门禁**：`df -h /` 的 `Avail` 不低于初始化前的 7.8G；`/root/autodl-tmp/tomori/` 下各目录均存在；`YOLO_AUTOINSTALL=False` 与 `sync=false` 已生效。
 
-6. **验收门禁**：`df -h /` 的 `Avail` 不低于初始化前的 7.8G；`/root/autodl-tmp/tomori/` 下各目录均存在；`YOLO_AUTOINSTALL=False` 已生效。
+### 6.4 数据集拉取、清洗切分、训练与 ONNX 导出编排
 
-### 6.4 数据集拉取、训练与 ONNX 导出编排
-
-0. **`D-29 ✅` 数据集使用边界与远端直拉（免发函，守 `F14` 事实纪律）**：
+0. **`D-29 ✅` 数据集使用边界与远端实测拉盘规程（守 `F14` 事实纪律）**：
    - **授权定案（`docs/DECISION.md` `D-29`、`docs/REQUIREMENTS.md` §6.2、`docs/DESIGN.md` §5.3）**：本项目为个人本地研究与练手项目（业务与推理在本机运行，模型开发与训练按 `D-06` 在个人远端 GPU 执行，不对外商用分发），**D1–D7 公开与自采数据集均可直接用于阶段二训练与实验，无需向原作者发函申请商用授权**；同时按 `F14` 在 `docs/DESIGN.md` §5.3 保留 D1–D7 真实原始许可与质量元数据。
-   - **远端拉取 `D1`（`ngocleltt/lamp-state-detection`，`cc-by-4.0`，8,428 张 `1280×720` JPG，1.69 GB）**：因远端直连 `huggingface.co` 超时，须走 `HF_ENDPOINT=https://hf-mirror.com`；官方 `huggingface_hub` CLI 命令为 `hf download`（`https://huggingface.co/docs/huggingface_hub/guides/cli`）：
+   - **远端拉取 `D1`（`ngocleltt/lamp-state-detection`，`cc-by-4.0`，8,428 张图像 + 8,428 标注 + 8,428 JSON = 25,289 文件，1.8G）**：
+     > ⚠️ **已实证不可行方案（`task-72`）**：`hf download` 走 `hf-mirror.com` 在 25,289 小文件下会触发 **`HTTP 429 Too Many Requests`**；走 `/etc/network_turbo` 直连 `huggingface.co` + `hf-xet` 则出现 **86% CPU 挂死 3 分钟零落盘**。
+     > **已实证高速零差错方案**：**`GIT_LFS_SKIP_SMUDGE=1 git clone --depth=1`**（一次 pack 秒级拉回全部 `labels/`、`annotations/`、`metadata.csv` 与 LFS pointer）+ 批量调用 Git LFS `info/lfs/objects/batch` 换取 CDN 签名直链 + **`aria2c -j 16`** 并发下载并内置 `sha-256` 校验（实测 `8,428/8,428` 全通过，`remaining_pointers=0`）：
      ```bash
-     # 在远端执行（加 HF_HUB_DISABLE_XET=1 规避 hf-mirror 上可能出现的 xet-read-token 404，
-     # 依据：https://hf-mirror.com/ 与 huggingface_hub env var 文档）：
-     ssh tomori-gpu "source ~/.bashrc && \
-       HF_ENDPOINT=https://hf-mirror.com HF_HUB_DISABLE_XET=1 \
-       /root/autodl-tmp/tomori/venv/bin/hf download \
-       --repo-type dataset ngocleltt/lamp-state-detection \
-       --local-dir /root/autodl-tmp/tomori/datasets/d1_lamp_state"
+     # 1) 秒级拉取全部文本与 LFS 指针
+     GIT_LFS_SKIP_SMUDGE=1 git clone --depth=1 \
+       https://hf-mirror.com/datasets/ngocleltt/lamp-state-detection.git \
+       /root/autodl-tmp/tomori/datasets/d1_lamp_state
+     # 2) source /etc/network_turbo 后，按每批 100 个 OID 调
+     #    POST https://huggingface.co/datasets/ngocleltt/lamp-state-detection.git/info/lfs/objects/batch
+     #    生成清单交 aria2c -j 16 --checksum=sha-256=... --all-proxy="$http_proxy" 并发拉完 images/*.jpg
      ```
-   - **D1–D7 清洗防泄漏硬纪律（详见 `docs/DESIGN.md` §5.3）**：
-     - `D1`：`metadata.csv` 含 `video_id` 连续抽帧，**必须按 `video_id` 分组切分**（`70%/15%/15%`），严禁随机打散跨集泄漏。
-     - `D5`（`Team16Project/Street-Light-Dataset`）：**必须剔除 `Flicker/` 目录下 `.mp4` 视频文件**（守 `N1` 禁实时视频红线），仅静态图可参考。
-     - `D7`（`poles-defect/damaged_pole` v2）：含 `3×` 预增强，引入前**须先按 64-bit pHash 去重防泄漏**。
+     > ⚠️ **已知数据坑（`D1/data.yaml` 是坏的，严禁直接用于训练）**：上游仓库自带 `data.yaml` 写 `path: tuning-yolo`、`train: images/train`、`val: images/val`，但实测 `images/` 与 `labels/` 下**均为 0 个子目录**（8,428 张图全平铺在 `images/`）。**必须先执行 `tomori.vision.dataset_prep` 重建防泄漏切分与有效 `data.yaml`**（见步骤 1）。
+   - **已探测其它数据集状态（`task-72` 实测，严禁伪造）**：
+     - **`D5`（`Team16Project/Street-Light-Dataset`）**：`source /etc/network_turbo` 后 `git clone --depth=1` 可直接拉盘至 `/root/autodl-tmp/tomori/datasets/d5_street_light`（`4.0G`，1,539 张静态图 + **`26` 个 `.mp4`**；注意 **`Raw Dataset/Working/` 内也混有 4 个 `.mp4`**，连同 `Flicker/` 22 个 `.mp4` **必须按扩展名剔除**以守 `N1`；且无 YOLO 检测框）。
+     - **`D3` / `D4` / `D7`（Roboflow）**：实测 `universe.roboflow.com/*` 返 `403`、`api.roboflow.com/...` 返 `401`（`"This method requires your API key"`），无账号/Key 不可直拉。
+     - **`D2`（`WHU-Infra3D`）** / **`D6`**：`D2` README 仅留邮箱申请无直链；`D6` 仓库无数据文件。
+   - **D1–D7 清洗防泄漏硬纪律（详见 `docs/DESIGN.md` §5.3 & `docs/TRAIN.md` §2.4）**：
+     - `D1`：`metadata.csv` 含 `10` 组 `video_id` 连续抽帧，**必须按 `video_id` 分组切分**（`70%/15%/15%`），严禁随机打散跨集泄漏。
+     - `D5`：必须按扩展名过滤 `.mp4`（含 `Working/` 内混入的 4 个视频，守 `N1`）。
+     - `D7`：引入前**须先按 64-bit pHash 去重防泄漏**。
      - `val`/`test` 严禁混入合成增强样本。
 
-1. **增量同步自采/预处理数据集（禁止通过 git 传数据集）**：
+1. **执行标准清洗与防泄漏切分（必须在训练前运行，修复坏 `D1/data.yaml`）**：
    ```bash
-   rsync -avz --progress --partial ./vision/datasets/ tomori-gpu:/root/autodl-tmp/tomori/datasets/
+   ssh tomori-gpu "source /root/autodl-tmp/tomori/env.sh && cd /root/autodl-tmp/tomori/repo && \
+     /root/.local/bin/uv run python -m tomori.vision.dataset_prep \
+       --source d1=/root/autodl-tmp/tomori/datasets/d1_lamp_state \
+       --output-dir /root/autodl-tmp/tomori/datasets/prepared_v1 \
+       --phash-threshold 6 --seed 42"
    ```
-   同步前确认远端 `data.yaml` 中的 `path` 指向 `/root/autodl-tmp/tomori/datasets/...`。
+   同步自采/预处理数据时可用 `rsync -avz --progress --partial ./vision/datasets/ tomori-gpu:/root/autodl-tmp/tomori/datasets/`（禁止通过 git 传数据集），并确认 `data.yaml` 指向 `/root/autodl-tmp/tomori/datasets/...`。
 
-2. **底模上传（首选路径）**：远端 `github.com` 实测不稳定，**先在本地下载再上传**：
+2. **底模下载（官方 `yolo26s.pt`，精确 `20,422,725` B）**：
    ```bash
-   # 本地下载官方权重（20,422,725 B）
-   curl -L -o ./yolo26s.pt https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26s.pt
-   # 校验体积后上传
-   stat -c '%s' ./yolo26s.pt
-   rsync -avz --progress ./yolo26s.pt tomori-gpu:/root/autodl-tmp/tomori/weights/
+   # 首选：远端开启学术加速直连拉盘至 weights/
+   ssh tomori-gpu "source /etc/network_turbo && curl -fSL -o /root/autodl-tmp/tomori/weights/yolo26s.pt https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26s.pt && stat -c '%n %s bytes' /root/autodl-tmp/tomori/weights/yolo26s.pt"
    ```
-   备选：远端 `source /etc/network_turbo` 开学术加速后直连下载（该脚本自述「不承诺稳定性」）。
+   备选（若远端 GitHub 加速波动）：在本地下载后校验 `stat -c '%s' ./yolo26s.pt`（须等于 `20422725`）再 `rsync -avz --progress ./yolo26s.pt tomori-gpu:/root/autodl-tmp/tomori/weights/`。
 
 3. **在持久会话中启动训练（防 SSH 断开中断，日志落盘）**：
-   使用 `tmux` 启动训练（`tmux`/`screen` 实测均已安装）：
+   使用 `tmux` 启动训练（`tmux`/`screen` 实测均已安装）；推荐通过项目封装 CLI `python -m tomori.vision.trainer`（内置 `D-06`/`D-28`/`D-18`/AutoBatch/双头验证/ONNX 校验与 `SHA256SUMS` 生成）：
    ```bash
    ssh -t tomori-gpu "tmux new -s tomori-train"
-   # 在 tmux 会话内执行（环境变量已由 ~/.bashrc 注入；用 venv 内 yolo）：
+   # 在 tmux 会话内执行：
+   source /root/autodl-tmp/tomori/env.sh
    cd /root/autodl-tmp/tomori/repo
-   /root/autodl-tmp/tomori/venv/bin/yolo train \
+   # 可选：先无 GPU 干跑校验数据 YAML 与参数护栏
+   /root/.local/bin/uv run python -m tomori.vision.trainer \
+     --data /root/autodl-tmp/tomori/datasets/prepared_v1/data.yaml \
+     --dry-run
+
+   # 正式训练 + 双头离线测试 + best_e2e.onnx 导出 + SHA256SUMS（imgsz=1280, epochs=500, patience=20, batch=-1）
+   /root/.local/bin/uv run python -m tomori.vision.trainer \
+     --data /root/autodl-tmp/tomori/datasets/prepared_v1/data.yaml \
+     --model /root/autodl-tmp/tomori/weights/yolo26s.pt \
+     --project /root/autodl-tmp/tomori/runs \
+     --name streetlight_v1 \
+     --imgsz 1280 --epochs 500 --patience 20 --batch -1 \
+     2>&1 | tee /root/autodl-tmp/tomori/runs/train_streetlight_v1.log
+   ```
+   等效底层 Ultralytics 参数（参考 `docs/TRAIN.md` §3）：
+   ```bash
+   /root/.local/bin/uv run yolo train \
      model=/root/autodl-tmp/tomori/weights/yolo26s.pt \
-     data=/root/autodl-tmp/tomori/datasets/streetlight/data.yaml \
-     epochs=120 \
-     imgsz=1024 \
-     batch=32 \
+     data=/root/autodl-tmp/tomori/datasets/prepared_v1/data.yaml \
+     epochs=500 \
+     patience=20 \
+     imgsz=1280 \
+     batch=8 \
      device=0 \
      amp=True \
      flipud=0.0 \
      hsv_v=0.25 \
      hsv_s=0.4 \
      project=/root/autodl-tmp/tomori/runs \
-     name=streetlight_v1 \
-     2>&1 | tee /root/autodl-tmp/tomori/runs/train_streetlight_v1.log
+     name=streetlight_v1
    ```
    > **增强参数说明（防昼夜洗白，`docs/DESIGN.md` §5.3）**：`ultralytics==8.4.216` `cfg/default.yaml` 默认 `hsv_s=0.7`、`hsv_v=0.4`，本项目必须显式压低为 `flipud=0.0`、`hsv_v=0.25`、`hsv_s=0.4`，避免把夜间 `streetlight_off` 洗白为发光状态或上下颠倒路灯拓扑。
    > **只用 `yolo26s.pt` 一个档位**（用户 `D-06`）。`n`/`m`/`l`/`x` 一律不使用；需要更强表达力时通过 `imgsz` 与数据增强解决，**不换 scale**（§6.4 末注）。
    > 出处：`yolo26n/s/m/l/x.pt` 均为官方真实文件名，见 https://docs.ultralytics.com/models/yolo26 （Detection 行）；权重可从 https://github.com/ultralytics/assets/releases/tag/v8.4.0 下载。核实记录见 `.team/notes/research/yolo26-official-sources.md`。
-   > **`imgsz` 必须与 `.env` 的 `YOLO_IMG_SIZE` 完全一致（当前 `1024`）**：训练尺寸 → `export(..., imgsz=1024, nms=False, dynamic=False)` → `.env` → 推理端四者必须同值，否则 ONNX 图内固化的输入尺寸与推理传入尺寸不符，首次推理即张量形状报错（`docs/DESIGN.md` §5.3）。
+   > **`imgsz` 必须与 `.env` 的 `YOLO_IMG_SIZE` 完全一致（当前 `1280`）**：训练尺寸 → `export(..., imgsz=1280, nms=False, dynamic=False)` → `.env` → 推理端四者必须同值，否则 ONNX 图内固化的输入尺寸与推理传入尺寸不符，首次推理即张量形状报错（`docs/DESIGN.md` §5.3）。
    > **显存调参建议（本机实测 32G 档）**
    >
    > 🟢 **有官方出处的一条**：
    > - 建议先用 `batch=-1` 让 AutoBatch 自动探测（官方定量：单卡目标约 **60% 显存占用**，也可写小数如 `batch=0.70`），再取探测值向下取 2 的幂写死，保证可复现。
    >   出处：https://docs.ultralytics.com/guides/model-training-tips ；`ultralytics==8.4.216` 的 `cfg/default.yaml` 逐字 `batch: 16 # (int | float) batch size as int (e.g. 16), -1 for AutoBatch, or float in (0.0, 1.0) for GPU memory fraction`
    >
-   > 🟡 **以下为本项目工程初值，未标定，官方未给出按显存分档的具体数字**：
-   > - **本机实测显存为 32G（`32760 MiB`），只用 32G 分档**：`imgsz=1024` 下暂定 `batch=16~32`。48G 分档（`batch=32~64`）留档供未来机型，当前不适用。
-   > - `epochs=120` 亦为工程初值，非官方推荐轮数。
+   > 🟡 **以下为本项目实测显存与工程参数（`docs/TRAIN.md` §2.2 & §3.1）**：
+   > - **本机实测显存为 32G（`32760 MiB`），只用 32G 分档**：`imgsz=1280` 下经 AutoBatch 实测探测为 **`13`**，向下取 2 的幂锁死 **`batch=8`**（3 步 dummy 实测峰值 `12,028 MiB / 11.75 GiB`；`batch=16` 峰值 `23,396 MiB / 22.85 GiB` 超过 60% 上限）。48G 分档留档供未来机型，当前不适用。
+   > - **`epochs=500 --patience 20`** 为项目定案参数（交由 `EarlyStopping` 监控 `mAP50-95` 控制收敛；若于第 `491` 轮前早停导致 `close_mosaic=10` 未触发，可用 `--mosaic-polish-epochs 10` 追加两阶段无 Mosaic 短微调，详见 `docs/TRAIN.md` §3.1）。
    > - 小目标（如远景灯头）需要更高分辨率时，通过**提高 `imgsz`、调整数据增强**等手段处理，**不换 scale**（用户已明确只用 `yolo26s`，故 `m`/`l`/`x` 不在阶段二选项内）。
-   > - 若样本量 `< 1,000` 张，可配合小数据集配方：`optimizer=AdamW lr0=0.001 patience=20 mosaic=0.5 mixup=0.0`。
    >
    > ⚠️ **两条易错点（无出处说法已删除）**：
    > - 官方对 OOM 的原话只是「**reduce the batch size incrementally until the model trains smoothly**」（渐进减小 `batch`），**未**承诺「单卡 OOM 会自动减半重试」——该说法无出处，已从本文档删除。OOM 会直接中断训练，请据实减小 `batch` 后重跑。
-   > - 官方 `imgsz` 默认是 **`640`**；本项目用 `1024` 是为远景小目标自选的**工程初值**，**不是官方推荐值**。
+   > - 官方 `imgsz` 默认是 **`640`**；本项目用 `1280`（`2×640`、`40×32` 步长整除）是为远景小目标与 D1 `81.86%` 原生 `1280×720` 图 `1:1` 零下采样而锁定的**项目规格**，**不是官方推荐值**。
    >
    > **写作纪律**：本段落曾把「项目工程初值」与「官方结论」混在一句「依据官方指南」之下，导致读者连带误信。**每条断言各自标出处，不共享段落级出处。**
 
-4. **导出端到端无 NMS ONNX（`best_e2e.onnx`，`docs/DESIGN.md` §5.3）**：
+4. **导出端到端无 NMS ONNX（`best_e2e.onnx`，`docs/DESIGN.md` §5.3；若使用 `python -m tomori.vision.trainer` 则已自动执行）**：
    ```bash
    /root/autodl-tmp/tomori/venv/bin/yolo export \
      model=/root/autodl-tmp/tomori/runs/streetlight_v1/weights/best.pt \
      format=onnx \
-     imgsz=1024 \
+     imgsz=1280 \
      nms=False \
      dynamic=False
    # Ultralytics 默认输出 weights/best.onnx（见 https://docs.ultralytics.com/modes/export/），
@@ -400,7 +465,7 @@ curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="/root/autodl-tm
    cp /root/autodl-tmp/tomori/runs/streetlight_v1/weights/best.onnx \
       /root/autodl-tmp/tomori/runs/streetlight_v1/weights/best_e2e.onnx
    ```
-   > 导出前确保已设置 `YOLO_AUTOINSTALL=False`；如缺少 `onnx`/`onnxslim`，Ultralytics 会显式报错提示缺少依赖而不会静默装包（`https://docs.ultralytics.com/modes/export/`）。不硬编码 `opset=17`（沿用 Ultralytics 官方默认 opset 18，`docs/DESIGN.md` §5.3），回传本地统一扁平放置于 `./vision/weights/{best.pt,best_e2e.onnx}`。
+   > 导出前确保已设置 `YOLO_AUTOINSTALL=False`；如缺少 `onnx`/`onnxslim`，Ultralytics 会显式报错提示缺少依赖而不会静默装包（`https://docs.ultralytics.com/modes/export/`）。不硬编码 `opset=17`（沿用 Ultralytics 官方默认 opset 18，`docs/DESIGN.md` §5.3），回传本地统一扁平放置于 `./vision/weights/{best.pt,best_e2e.onnx}`（校验张量形状 `[1, 3, 1280, 1280] -> [1, 300, 6]`）。
 
 ### 6.5 训练产物回传与完整性校验规程
 
@@ -431,7 +496,7 @@ curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="/root/autodl-tm
 
 回传权重**不得直接投入使用**。启用前必须逐项核对，任一项不通过即拒绝加载该权重，禁止以「先跑起来再说」降级处理（`docs/DESIGN.md` §5.2–§5.3、`docs/API.md` §3.4）：
 
-1. **`imgsz` 一致性门禁（硬性）**：核对 `metrics.json` 的 `imgsz` 字段与 `.env` 的 `YOLO_IMG_SIZE` **完全相等**（当前均应为 `1024`）。
+1. **`imgsz` 一致性门禁（硬性）**：核对 `metrics.json` 的 `imgsz` 字段与 `.env` 的 `YOLO_IMG_SIZE` **完全相等**（当前均应为 **`1280`**）。
    ```bash
    # 回传的 metrics.json 中记录的训练/导出尺寸
    rg -n '"imgsz"' ./vision/reports/streetlight_v1/metrics.json

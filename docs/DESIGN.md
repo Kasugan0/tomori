@@ -1,4 +1,4 @@
-> 状态：阶段一定稿（待用户放行阶段二实现）
+> 状态：阶段二已放行（已按用户 `src layout` 裁决同步目录与门禁口径；核心契约沿用阶段一定稿）
 
 # 系统架构与详细设计（DESIGN）
 
@@ -32,7 +32,7 @@
 > **口径补充**：
 > - 非 CRUD 核心业务机制共 **3** 项（区域授权派单 / 表驱动确定性故障分级 + 郑州 48h SLA / 返修闭环与超阈值复核，见 §3.2–§3.4）；幂等与审计属横切基础设施（§3.5），不计入该数。
 > - 终态构成逐机核对：A 机 2（`CLOSED` / `CANCELLED`）+ B 机 5（`REJECTED` / `COMPLETED` / `TIMEOUT_REASSIGNED` / `ESCALATED` / `CANCELLED`）+ C 机 3（`PASSED` / `CLOSED_BY_REVIEW` / `CANCELLED`）+ D 机 1（`SENT`，`DEAD_LETTER` 有 D7/D8 出口不属终态）= **11**。
-> - 阶段一无运行态数据库（`backend/`、`migrations/` 尚未创建），故 `17 / 76 / 41 / 22 / 37 / 6 / 12` 均是 **DDL 设计文本的可复算计数**，并非 `information_schema` 实测值；阶段二迁移落地后必须运行 §4.1 对账 SQL 核实。
+> - 阶段二虽已放行，但 `migrations/` 尚未创建、迁移未在真库执行，故 `17 / 76 / 41 / 22 / 37 / 6 / 12` 均仍是 **DDL 设计文本的可复算计数**，并非 `information_schema` 实测值；阶段二迁移落地后必须运行 §4.1 对账 SQL 核实。
 
 ---
 
@@ -40,7 +40,7 @@
 
 ### 1.1 单应用三角色架构、目录布局与端口分配
 
-**一句话架构**：单应用单体架构 —— 后端 FastAPI（异步）+ PostgreSQL 17（`17.12`）+ SQLAlchemy 2.0 Async + `psycopg` v3；前端 Vue 3 + TypeScript + Vite + Element Plus；视觉 Ultralytics YOLO26s + OpenCV，**以进程内 `import vision` 模块嵌入后端**（`D-37`），不拆独立视觉微服务。
+**一句话架构**：单应用单体架构 —— 后端 FastAPI（异步）+ PostgreSQL 17（`17.12`）+ SQLAlchemy 2.0 Async + `psycopg` v3；前端 Vue 3 + TypeScript + Vite + Element Plus；视觉 Ultralytics YOLO26s + OpenCV，**以进程内 `tomori.vision` 子包嵌入后端**（`D-37`），不拆独立视觉微服务。
 
 #### 单应用三角色前端形态（非多 SPA）
 
@@ -54,39 +54,42 @@
 
 #### 规划目录布局与单包依赖落点（`D-32`）
 
-**包组织裁决（`D-32`）**：采用**单根 `pyproject.toml` + `[project.optional-dependencies] vision`**。`backend/` 与 `vision/` 均为根包下的子目录模块，**不建 `backend/pyproject.toml`**，全仓唯一 `uv.lock`。纯后端开发 `uv sync`（不拉取 GB 级 `torch`）；视觉开发/训练/全量 E2E 用 `uv sync --extra vision`。
+**包组织裁决（`D-32` + `src layout`）**：采用**单根 `pyproject.toml`（`src layout`：`[tool.uv.build-backend]` 的 `module-root` 为 `src`——即实际默认值，包名 `tomori`）+ `[project.optional-dependencies] vision`**。全部应用与视觉源码均位于 `src/tomori/`，所有 import 统一为 `tomori.*`（如 `from tomori.settings import Settings`、`from tomori.models import FaultTicket`），**不另设子包 `pyproject.toml`**，全仓唯一 `uv.lock`。纯后端开发 `uv sync`（不拉取 GB 级 `torch`）；视觉开发/训练/全量 E2E 用 `uv sync --extra vision`。
 
-> 🔴 **阶段一当前状态事实**：`backend/`、`web/`、`tests/`、`migrations/` 目录**均不存在**；根 `pyproject.toml` 仍是 `uv init` 脚手架（0 依赖安装）；`vision/` 目录下仅存在 8 个未经运行验证的预研草稿 `.py`（来源与限制见 §5.3）。以下目录树为阶段二实现的唯一权威布局：
+> ✅ **阶段二已放行**（用户原话：「现在放行代码实现。注意我们的代码布局，使用的是 src layout」），以下目录树为唯一权威布局（`pyproject.toml`、`migrations/versions/0001..0004` 与 `src/tomori/vision/` 11 个模块〔含新增只读 EDA 工具 `eda.py`，另有 `dataset_prep.py`、`trainer.py`，共 13 个 `.py` 文件〕均已落盘；原根级 `vision/*.py` 已移除，仅留根级 `vision/` 空目录供运行时 `weights/`/`reports/` 产物）：
 
 ```text
-tomori/                           # 仓库根
-├── pyproject.toml                # ★ 唯一 Python 包定义（单包，阶段二重写替换 uv init 脚手架）
-│                                 #   [project.optional-dependencies] vision = [...]
-├── uv.lock                       # 全仓唯一 Python lockfile
-├── backend/                      # 阶段二创建（根包下的子目录模块，无独立 pyproject.toml）
-│   ├── alembic.ini               # sqlalchemy.url 留空，由 env.py 从 Settings 注入
-│   ├── migrations/
-│   │   ├── env.py                # 异步迁移模板（import 全部 17 models）
-│   │   ├── script.py.mako
-│   │   └── versions/
-│   │       ├── 0001_initial_schema.py
-│   │       ├── 0002_partial_unique_indexes.py
-│   │       ├── 0003_circular_fk_rework_acceptance.py  # 显式 op.create_foreign_key
-│   │       └── 0004_business_rules_seed.py
-│   └── app/
-│       ├── main.py               # create_app() + lifespan + 统一异常处理器
-│       ├── settings.py           # pydantic-settings Settings（读 .env）
+tomori/                                 # 仓库根
+├── pyproject.toml                      # ★ 唯一 Python 包定义（src layout 单包，module-root="src"，包名 tomori）
+│                                       #   [project.optional-dependencies] vision = [...]
+├── uv.lock                             # 全仓唯一 Python lockfile
+├── alembic.ini                         # 根级；sqlalchemy.url 留空，由 migrations/env.py 从 Settings 注入
+├── migrations/                         # 根级 Alembic 异步迁移目录
+│   ├── env.py                          # 异步迁移模板（import 全部 17 个 tomori.models）
+│   ├── script.py.mako
+│   └── versions/
+│       ├── 0001_initial_schema.py
+│       ├── 0002_partial_unique_indexes.py
+│       ├── 0003_circular_fk_scheme_b.py  # 显式 op.create_foreign_key（alembic_version.version_num 上限 VARCHAR(32)，缩短至 25 字符）
+│       └── 0004_business_rules_seed.py
+├── src/
+│   └── tomori/                         # ★ 唯一 Python 包本体（所有 import 均为 tomori.*）
+│       ├── __init__.py
+│       ├── main.py                     # create_app() + lifespan + 统一异常处理器
+│       ├── settings.py                 # pydantic-settings Settings（读 .env）
 │       ├── db/{base.py,session.py,types.py}
-│       ├── models/               # 17 张业务表，models/__init__.py 汇总
-│       ├── schemas/              # Pydantic 请求/响应模型，与 models 一一对应
+│       ├── models/                     # 17 张业务表，models/__init__.py 汇总
+│       ├── schemas/                    # Pydantic 请求/响应模型，与 models 一一对应
 │       ├── api/{deps.py,errors.py,v1/}
-│       ├── services/             # ★ 唯一允许改状态的地方（state_machine.py）
-│       ├── vision/{client.py,mapping.py}  # 函数内延迟 import vision（D-37 + D1 隔离）
-│       └── workers/{sla_scanner.py,notifier.py}
-├── vision/                       # 阶段二视觉模块（当前仅有未运行验证草稿，见 §5.3）
-├── web/                          # 阶段二前端 Vue 3 + TypeScript + Vite（pnpm 管理）
+│       ├── services/                   # ★ 唯一允许改状态的地方（state_machine.py）
+│       ├── workers/{sla_scanner.py,notifier.py}
+│       └── vision/                     # 已迁入落盘 11 个模块（原 8 份草稿迁入修复 + client.py/mapping.py + 新增只读 EDA 工具 eda.py；另有 dataset_prep.py、trainer.py，共 13 个 .py 文件；重依赖在函数内延迟 import，D-37 + D1 隔离）
+├── vision/                             # 运行时产物目录：weights/、reports/，gitignored，不在 src 内（源码已迁出）
+├── web/                                # 前端 Vue 3 + TypeScript + Vite（pnpm 管理）
 └── tests/{conftest.py,unit/,integration/,e2e/}
 ```
+
+> **`alembic.ini` 与 `prepend_sys_path` 说明**：`src layout` 下 `uv run` 已将可编辑安装的 `src/tomori` 放入 `sys.path`，`alembic.ini` 无需额外配置 `prepend_sys_path = src`；若脱离 `uv` 直接运行 `alembic`，可在 `alembic.ini` 设置 `prepend_sys_path = src`（Alembic 官方 1.5.5+ 支持）。
 
 #### 代码分层硬纪律与唯一状态变更入口
 
@@ -97,7 +100,7 @@ tomori/                           # 仓库根
 | `models/*` | 表结构、约束、关系 | 不写业务逻辑 |
 | `db/*` | 引擎/会话/元数据 | 不 import `models`（方向恒为 `models → db/base.py`，防循环依赖） |
 
-> **唯一状态变更入口（防绕过硬纪律）**：`fault_tickets` / `dispatch_records` / `rework_orders` 的 `status` 更新**只允许**经由 `backend/app/services/state_machine.py` 的 `transition_*()` 函数。实现期任何 `session.execute(update(...).values(status=...))` 出现在 `state_machine.py` 之外，一律视为缺陷并要求改回，以确保不变量 `I7`（审计）与 `I8`（通知）物理受控。
+> **唯一状态变更入口（防绕过硬纪律）**：`fault_tickets` / `dispatch_records` / `rework_orders` 的 `status` 更新**只允许**经由 `src/tomori/services/state_machine.py` 的 `transition_*()` 函数。实现期任何 `session.execute(update(...).values(status=...))` 出现在 `state_machine.py` 之外，一律视为缺陷并要求改回，以确保不变量 `I7`（审计）与 `I8`（通知）物理受控。
 
 #### 端口分配（五方一致）与宿主机实测基线
 
@@ -126,9 +129,9 @@ tomori/                           # 仓库根
 |---|---|
 | 配置文件 | `.env`（从 `.env.example` 复制）；`.env` **不进版本库**（`.env.example` 归 `dev-ops` 独占） |
 | 密钥 | `JWT_SECRET_KEY` **无默认值，缺失即启动失败**，杜绝默认开发密钥泄漏至生产 |
-| 数据库 URL | `postgresql+psycopg://...`；`alembic.ini` 的 `sqlalchemy.url` **留空**，由 `env.py` 从 `Settings` 读取 |
+| 数据库 URL | `postgresql+psycopg://...`；`alembic.ini` 的 `sqlalchemy.url` **留空**，由 `migrations/env.py` 从 `Settings` 注入 |
 | 上传与像素上限 | `MAX_UPLOAD_SIZE_MB=15`（= `15,728,640` B，`D-02`）；像素上限 `40_000_000`（代码常量，与 `Image.MAX_IMAGE_PIXELS` 同值）；单次请求文件数 `1..10`（`D-03`） |
-| 视觉配置 | `YOLO_INFERENCE_ENABLED`（`false` → AI 端点返回 `503 VISION_DISABLED`，人工报障不受影响）；`YOLO_INFERENCE_MODE`（`auto\|strict_custom`）；`YOLO_IMG_SIZE=1024`（`D-28`）。单次推理超时由后端代码常量 `VISION_TIMEOUT_SECONDS = 60` 固定（**不入 `.env`**，`.env.example` 无此键） |
+| 视觉配置 | `YOLO_INFERENCE_ENABLED`（`false` → AI 端点返回 `503 VISION_DISABLED`，人工报障不受影响）；`YOLO_INFERENCE_MODE`（`auto\|strict_custom`）；`YOLO_IMG_SIZE=1280`（`D-28`）。单次推理超时由后端代码常量 `VISION_TIMEOUT_SECONDS = 60` 固定（**不入 `.env`**，`.env.example` 无此键） |
 
 ---
 
@@ -153,33 +156,41 @@ tomori/                           # 仓库根
 |---|---|---|---|
 | Python | **`>=3.12`**（`.venv 3.12.11`） | — | 与 `.python-version` 一致 |
 | `fastapi[standard]` | **`0.165.0`**（2026-11-18） | `>=3.11` | 异步 Web 框架；已依赖 `starlette>=1.6.0`（1.x API）、`pydantic>=2.9.0`；`[standard]` 附带 `uvicorn` / `python-multipart` |
-| `sqlalchemy[asyncio]` | **`>=2.0.58,<2.1`**（✅ **`D-05` 定案**） | `>=3.11` | `2.0.58` 与 `2.1.9` 同于 2026-11-16 发布（2.0 仍活跃维护）；知道 2.1 存在并主动锁 2.0 线，原因见下方决策块；**强制带 `[asyncio]` extra** |
+| `sqlalchemy[asyncio]` | **`>=2.0.58,<2.1`**（✅ **`D-05` 定案**） | `>=3.7` | `2.0.58` 与 `2.1.9` 同于 2026-11-16 发布（2.0 仍活跃维护）；知道 2.1 存在并主动锁 2.0 线，原因见下方决策块；**强制带 `[asyncio]` extra** |
 | `psycopg[binary]` | **`3.3.9`**（2026-11-12） | `>=3.10` | PG v3 驱动，统一同步/异步接口；免容器编译；唯一合法 scheme 为 `postgresql+psycopg://` |
 | `alembic` | **`1.20.1`**（2026-10-22） | `>=3.10` | 异步迁移模板（`alembic init -t async`）；`SQLAlchemy>=2.0` 宽松兼容 |
 | `pydantic` | **`2.14.4`**（2026-11-19） | `>=3.10` | v2 校验与 OpenAPI 序列化（`model_config` / `field_validator` / `model_validator`） |
 | `pydantic-settings` | **`2.16.3`**（2026-11-13） | `>=3.11` | `BaseSettings` 从 `.env` 读配置（已从 pydantic 主包迁出） |
-| `uvicorn` | **`0.54.0`**（2026-09-25） | `>=3.10` | ASGI 服务入口 |
+| `uvicorn[standard]` | **`0.54.0`**（2026-09-25） | `>=3.10` | ASGI 服务入口；`[standard]` 附带 `uvloop`/`httptools`/`watchfiles`/`websockets`（生产与 dev 同口径，`task-63` 实测落地） |
+| `httpx` | **`0.28.1`**（约束 `>=0.28.1,<1.0.0`） | `>=3.8` | 主依赖显式声明——`respx 0.23.1` 仅支持 `httpx` 做 HTTP mock；ASGI 生命周期测试另用 `httpx2` |
 | `pwdlib[argon2]` | **`0.4.2`** | — | Argon2 密码哈希（FastAPI 官方 JWT 教程已从 `passlib` 迁至 `pwdlib`） |
 | `pyjwt` | **`2.15.1`** | — | `HS256` JWT 签发与校验（载荷含 `sub`/`tv`/`role`/`exp`） |
 | `pillow` | **`>=11.0.0`**（视觉侧记 `13.0.0`） | — | **服务端**独立安全边界：魔数、单帧检查、`Image.MAX_IMAGE_PIXELS=40_000_000` 防解压炸弹（禁止设为 `None`） |
 | `python-multipart` | `>=0.0.18`（PyPI 配套） | — | `multipart/form-data` 解析（缺它报 500） |
 | `tzdata` | **`2026.6`** | — | Alpine 容器缺系统 tzdata，`ZoneInfo("Asia/Shanghai")` 依赖它 |
 | `pytest` / `pytest-asyncio` / `pytest-cov` | **`9.2.0`** / **`1.5.0`** / **`7.1.0`** | `>=3.10` | `asyncio_mode="auto"`（1.x 已取消自定义 `event_loop` fixture） |
-| `httpx2` / `asgi-lifespan` | **`2.16.2`** / **`>=2.1.0`** | — | Starlette 官方 `TestClient` 已基于 `httpx2`（`httpx 0.28.1` deprecated）；`ASGITransport` 不触发 lifespan，需 `LifespanManager` |
-| `ruff` / `mypy` / `pytest-playwright` | **`0.17.6`** / **`>=1.14`** / Python E2E | — | `ruff` lint+format；`mypy`（`D-08` 工程定案）；`pytest-playwright` 统一 E2E（支撑合法种子与异步 DB 断言） |
-| `ultralytics` / `opencv-python-headless` / `onnxruntime` / `onnx` / `onnxslim` | **`8.4.216`** / **`5.1.0.95`** / `>=1.20.0,<2.0.0` / **`1.23.2`**（约束 `>=1.16.0,<2.0.0`） / **`0.1.99`**（约束 `>=0.1.82`） | `>=3.8` / `>=3.6` / — / `>=3.10` / `>=3.8` | `[project.optional-dependencies] vision` 分组隔离 `torch`/`torchvision`；本地推理默认加载 ONNX CPU `CPUExecutionProvider`；`onnx`/`onnxslim` 为 `simplify=True` 导出所需（见下方 `vision` extra 说明） |
+| `httpx2` / `asgi-lifespan` / `respx` | **`2.16.2`** / **`>=2.1.0`** / **`0.23.1`** | `>=3.11` / — / `>=3.8` | Starlette 官方 `TestClient` 已基于 `httpx2`（`httpx 0.28.1` deprecated）；`ASGITransport` 不触发 lifespan，需 `LifespanManager`；`respx` 仅 mock `httpx` |
+| `ruff` / `mypy` / `pytest-playwright` | **`0.17.6`** / **`>=2.3`**（实测解析 `2.4.1`） / **`>=0.10.0`** | — | `ruff` lint+format；`mypy`（`D-08` 工程定案，**下限收紧至 `>=2.3`**——`pydantic 2.14.4` 已停测更旧 mypy）；`pytest-playwright` 统一 E2E（支撑合法种子与异步 DB 断言） |
+| `ultralytics` / `opencv-python-headless` / `onnxruntime` / `onnx` / `onnxslim` / `numpy` | **`8.4.216`** / **`5.1.0.95`** / `>=1.20.0,<2.0.0` / **`1.23.2`**（约束 `>=1.16.0,<2.0.0`） / **`0.1.99`**（约束 `>=0.1.82`） / `>=2.0.0,<3.0.0` | `>=3.8` / `>=3.6` / — / `>=3.10` / `>=3.8` / `>=3.12` | `[project.optional-dependencies] vision` 分组隔离 `torch`/`torchvision`；本地推理默认加载 ONNX CPU `CPUExecutionProvider`；`onnx`/`onnxslim` 为 `simplify=True` 导出所需；`numpy` 显式声明以免被 `opencv`/`torch` 传递依赖拉到非预期版本（见下方 `vision` extra 说明） |
 
 > **SQLAlchemy 版本决策记录（`D-05`：知道 `2.1.9` 已 GA，主动锁定 2.0 线）**：① 用户原话契约为 `SQLAlchemy 2.0 Async`；② `2.0.58` 与 `2.1.9` 同日发版证明 2.0 线仍有安全与缺陷维护通道；③ 阶段一全套 API 断言取自 `rel_2_0_*` 文档且 Context7 MCP 通道在本环境**间歇性不稳定**（§1.4，不可作为唯一取证通道），不应在 4 周交付期叠加大版本迁移；④ 阶段三（如有）再评估升 2.1（重点核查 `AsyncAttrs`、`get_async_bind()` 与 `greenlet`）。
 
-#### 根 `pyproject.toml` 完整依赖骨架（阶段二由 `backend-dev` 替换脚手架）
+#### 根 `pyproject.toml` 完整依赖骨架（✅ `task-63` 已实测落盘，与仓库根实际文件一致）
 
 ```toml
+[build-system]
+requires = ["uv_build>=0.8.14,<0.14"]
+build-backend = "uv_build"
+
 [project]
 name = "tomori"
 version = "0.1.0"
+description = "Public lighting fault inspection and work-order system (#141)"
+readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
   "fastapi[standard]>=0.165.0",
+  "uvicorn[standard]>=0.54.0",
   "sqlalchemy[asyncio]>=2.0.58,<2.1",
   "psycopg[binary]>=3.3.9",
   "alembic>=1.20.1",
@@ -190,6 +201,7 @@ dependencies = [
   "pillow>=11.0.0",
   "python-multipart>=0.0.18",
   "tzdata>=2026.6",
+  "httpx>=0.28.1,<1.0.0",
 ]
 
 [project.optional-dependencies]
@@ -199,6 +211,7 @@ vision = [
   "onnxruntime>=1.20.0,<2.0.0",
   "onnx>=1.16.0,<2.0.0",
   "onnxslim>=0.1.82",
+  "numpy>=2.0.0,<3.0.0",
 ]
 
 [dependency-groups]
@@ -206,13 +219,34 @@ dev = [
   "pytest>=9.2.0",
   "pytest-asyncio>=1.5.0",
   "pytest-cov>=7.1.0",
+  "pytest-playwright>=0.10.0",
   "httpx2>=2.16.2",
   "asgi-lifespan>=2.1.0",
+  "respx>=0.23.1",
   "ruff>=0.17.6",
-  "mypy>=1.14",
-  "pytest-playwright",
+  "mypy>=2.3",
 ]
+
+[tool.uv]
+# ultralytics==8.4.216 无条件请求 GUI 版 opencv-python（依赖 libGL.so.1），
+# 用永假 marker 覆盖，确保只有 opencv-python-headless 提供 cv2（uv 0.8.14+ 兼容）。
+override-dependencies = ["opencv-python; python_version < '0'"]
+
+[tool.uv.build-backend]
+module-name = "tomori"
+module-root = "src"
+
+[tool.mypy]
+python_version = "3.12"
+mypy_path = "$MYPY_CONFIG_FILE_DIR/src"
+files = ["src", "tests"]
+strict = true
+plugins = ["pydantic.mypy"]
 ```
+
+> **`[tool.uv] override-dependencies` 是必须项（`task-63` 实测结论）**：`ultralytics==8.4.216` 无条件请求 **GUI 版 `opencv-python`**（依赖 `libGL.so.1`），会与 `opencv-python-headless` 争抢同一 `cv2` 命名空间并可能静默覆盖。用永假 marker `"opencv-python; python_version < '0'"` 覆盖其依赖声明，确保**只有** `opencv-python-headless` 提供 `cv2`；该写法同时兼容本机 `uv 0.8.14` 与远端 `uv 0.13.7`。
+>
+> **`[build-system]` 的 `uv_build` 版本区间**：`requires = ["uv_build>=0.8.14,<0.14"]` —— 下限对齐本机 `uv 0.8.14`（内置后端版本与 uv 同号），上限 `<0.14` 对齐远端 `uv 0.13.7`，保证两端均可解析；`[tool.uv.build-backend]` 显式写 `module-name = "tomori"` / `module-root = "src"` 而非依赖默认值，使 src layout 契约显式可审。
 
 > **`vision` extra 必须显式声明 `onnx>=1.16.0,<2.0.0` 与 `onnxslim>=0.1.82` 的理由**：生产/容器环境设 `YOLO_AUTOINSTALL=False`（禁止 `ultralytics` 运行期静默装包），而 Ultralytics 默认 `simplify=True` 导出 ONNX 时不仅依赖其 `[export-base]` extra 中的 `onnx` 与 `onnxslim`，更须对齐 `ultralytics==8.4.216` `exporter.py:1207/1217` 的 `check_requirements(("onnx>=1.16.0,<2.0.0", "onnxslim>=0.1.82"))` 硬要求；若不在此显式声明并收紧下限，`model.export(format="onnx", simplify=True)` 会在 `YOLO_AUTOINSTALL=False` 下直接报错，且可防止 `0.1.31..0.1.81` 在该限制下被拒导（见 `docs/RUNBOOK.md` §6 权重/导出门禁）。`ultralytics==8.4.216` 的 `==` 精确 pin 与 `docs/RUNBOOK.md` 锁定口径完全一致（`>=` 会解析到后续补丁版，与「锁定 `8.4.216`」意图不符）。
 
@@ -481,7 +515,7 @@ WHERE status = 'PROCESSING'
 | **I7** | 每个状态变更必须有且仅有 **1** 条 `audit_logs`（`action` 与转移表一一对应） | 「谁改的」不可追溯 | `state_machine.py` `transition_*()` 统一强制写入 |
 | **I8** | 每个状态变更必须产生对应 `notification_tasks`（`event_type` 19 种） | 当事人在系统外才得知派单 | `state_machine.py` 同事务 fan-out |
 
-> **PG 跨表守卫边界与不用触发器原因**：PostgreSQL 官方文档明确 `CHECK` 只能引用当前行（不可含子查询/跨表引用）。本项目采用**双轨兜底**：① 单行内约束由 76 条 `CHECK` + 6 个部分唯一索引强制；② 跨表不变量 `I1`–`I8` 由 `backend/app/services/state_machine.py` 的 `transition_*()` 配合 `SELECT ... FOR UPDATE` 串行化维护，配以事后验证查询（不用难以单测追踪的数据库触发器）。
+> **PG 跨表守卫边界与不用触发器原因**：PostgreSQL 官方文档明确 `CHECK` 只能引用当前行（不可含子查询/跨表引用）。本项目采用**双轨兜底**：① 单行内约束由 76 条 `CHECK` + 6 个部分唯一索引强制；② 跨表不变量 `I1`–`I8` 由 `src/tomori/services/state_machine.py` 的 `transition_*()` 配合 `SELECT ... FOR UPDATE` 串行化维护，配以事后验证查询（不用难以单测追踪的数据库触发器）。
 
 ---
 
@@ -1104,7 +1138,7 @@ WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
 
 ### 5.1 媒体四层白名单、昼夜亮度判定与候选输出契约
 
-#### 媒体四层白名单（服务端 Pillow + `vision/` 纵深防御）
+#### 媒体四层白名单（服务端 Pillow + `tomori.vision` 纵深防御）
 
 - **请求规范**：`POST /tickets/ai-candidates` 接收 `multipart/form-data` `files`（**`1..10` 张**，`D-03`；`0` 张 `422 NO_FILES`、`>10` 张 `422 TOO_MANY_FILES`），逐图独立分配 `analysis_id` 处理，单批不合并图像推理。
 - **四层门禁与错误优先级**（完整 12 步处理顺序与 5 步优先级见 `docs/API.md` §5）：
@@ -1150,7 +1184,7 @@ WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
 
 | 契约 | 硬约束 |
 |---|---|
-| **D1** | **`POST /tickets`（人工报障，支持 JSON 与 `multipart/form-data` `0..10` 张图）永不依赖视觉可用性**：即使 `vision/` import 失败、权重缺失或 `YOLO_INFERENCE_ENABLED=false`，必须始终返回 `201`（`report_source='MANUAL_*'`）；`app/vision/client.py` 必须在函数内延迟 `import vision`，禁止顶层裸导入 |
+| **D1** | **`POST /tickets`（人工报障，支持 JSON 与 `multipart/form-data` `0..10` 张图）永不依赖视觉可用性**：即使 `tomori.vision` import 失败、权重缺失或 `YOLO_INFERENCE_ENABLED=false`，必须始终返回 `201`（`report_source='MANUAL_*'`）；`src/tomori/vision/client.py` 必须在函数内延迟 `import tomori.vision`，禁止顶层裸导入 |
 | **D2** | **`POST /tickets/ai-candidates` 视觉失败时整笔回滚**：`fault_tickets` 新增 `0` 行、`fault_evidences` 新增 `0` 行，**且已写入磁盘的临时/上传文件必须删除**（防止磁盘泄漏与部分失败假绿） |
 | **D3** | **错误携带可操作兜底引导**：必须返回 `error.details.fallback.action == "MANUAL_REPORT"`、`resubmit_required == true`、非空 `message_key`（`vision.disabled.manual_fallback` / `vision.timeout.manual_fallback` / `vision.failed.manual_fallback`），**且不含 `evidence_ids`**（文件已回滚删除，兜底时前端携原文件走 `POST /tickets` 重投）。前端锚点 `data-testid="vision-fallback-banner"` |
 
@@ -1177,23 +1211,25 @@ WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
 #### 模型与分辨率唯一锁死（`D-06` + `D-28`）
 
 - **唯一底模：`yolo26s.pt`（官方 `20,422,725` B，禁用 `n`/`m`/`l`/`x` 及架构变体）**。4 条一手出处：① Ultralytics 模型主页 `https://docs.ultralytics.com/models/yolo26`（`released January 2026`，Detection 含 `yolo26n/s/m/l/x.pt`）；② 本项目锁定 `ultralytics==8.4.216` 源码内含 `ultralytics/cfg/models/26/yolo26.yaml`；③ `downloads.py` L26 checkpoint 列表；④ GitHub `assets/releases/tag/v8.4.0` 可直下权重 `20,422,725` B。
-- **唯一输入尺寸：`imgsz=1024` 四端严格一致（`D-28`）**：官方默认 `640`，本项目针对巡查高空小灯头选取工程初值 `1024`。**训练（`imgsz=1024`）→ 导出（`export(format="onnx", imgsz=1024, nms=False, dynamic=False)`）→ 配置（`.env` `YOLO_IMG_SIZE=1024`）→ 本地 `onnxruntime.InferenceSession` CPU 推理（启动期核验 `sess.get_inputs()[0].shape == [1, 3, 1024, 1024]`、端到端无 NMS 输出 `[1, 300, 6]`；`InferenceSession.run()` 直接推理时尺寸不符即抛 `INVALID_ARGUMENT`，同时本地运行环境设 `YOLO_AUTOINSTALL=False`）四端必须同值**。训练时同时保留原始双头 `best.pt` 与 `best_e2e.onnx`（`nms=False`）。
+- **唯一输入尺寸：`imgsz=1280` 四端严格一致（`D-28`）**：官方默认 `640`，本项目经 D1 全量只读 EDA（🟢 8,428 图，其中 `81.86%` / 6,899 张为 `1280×720`、`86.64%` 宽 `>=1280`）实测支撑，将工程初值由 `1024` 升级锁定为 **`1280`**（`1280=2×640`，对主力 `1280×720` 原图实现 `1:1` 零下采样、100% 保留原生像素，并将 `<16px` 极小灯头框占比由 `14.72%` 降至 `5.81%`，详见 `docs/TRAIN.md` §2.2）。**训练（`imgsz=1280`）→ 导出（`export(format="onnx", imgsz=1280, nms=False, dynamic=False)`）→ 配置（`.env` `YOLO_IMG_SIZE=1280`）→ 本地 `onnxruntime.InferenceSession` CPU 推理（启动期核验 `sess.get_inputs()[0].shape == [1, 3, 1280, 1280]`、端到端无 NMS 输出 `[1, 300, 6]`；`InferenceSession.run()` 直接推理时尺寸不符即抛 `INVALID_ARGUMENT`，同时本地运行环境设 `YOLO_AUTOINSTALL=False`）四端必须同值**。训练时同时保留原始双头 `best.pt` 与 `best_e2e.onnx`（`nms=False`）。
 
 #### 远端 GPU 开发训练 vs 本地仅推理职责边界（`D-01` + `D-06` + `D-27`）
 
 | 运行端 | 实测环境与唯一目录 | 允许工作 | 明确禁止 |
 |---|---|---|---|
-| **远端 GPU 服务器**（`ssh -p 13142`，个人远端机器） | `RTX 4080 SUPER / 32760 MiB`（驱动 `595.71.05` / CUDA `12.8`）；**统一落盘 `/root/autodl-tmp/tomori/`**（230G，根分区余 7.8G **零增长**）；使用预装绝对路径 **`/root/.local/bin/uv` `0.13.7`**（无需重装，详见 `docs/RUNBOOK.md` §6.1.1–§6.1.2） | 视觉代码开发、数据集准备、训练（先以官方 `batch=-1` AutoBatch 探测约 60% 显存后再向下取 2 的幂锁死，`epochs=120` 为未标定初值）、离线评估与 ONNX 导出 | 禁占根分区 `overlay`；禁换用 `n/m/l/x`；禁通过 git 传大数据集或权重 |
-| **本地研发/运行机** | `./vision/weights/` + 进程内 `import vision` | `SHA256SUMS` 校验、权重启用门禁（`docs/RUNBOOK.md` §6.6）、CPU/CUDA 本地推理验证与 FastAPI 联调 | **严禁本地训练、严禁本地开发训练脚本、严禁「本地 CPU 冒烟」路径** |
+| **远端 GPU 服务器**（`ssh -p 13142`，个人远端机器） | `RTX 4080 SUPER / 32760 MiB`（驱动 `595.71.05` / CUDA `12.8`）；**统一落盘 `/root/autodl-tmp/tomori/`**（230G，根分区余 7.8G **零增长**）；使用预装绝对路径 **`/root/.local/bin/uv` `0.13.7`**（无需重装，详见 `docs/RUNBOOK.md` §6.1.1–§6.1.2） | 视觉代码开发、数据集准备、训练（先以官方 `batch=-1` AutoBatch 探测约 60% 显存后再向下取 2 的幂锁死；`epochs=500, patience=20`，配合 `early_stopping_diagnostics` 与可选 `--mosaic-polish-epochs`，详见 `docs/TRAIN.md` §3）、离线评估与 ONNX 导出 | 禁占根分区 `overlay`；禁换用 `n/m/l/x`；禁通过 git 传大数据集或权重 |
+| **本地研发/运行机** | `./vision/weights/` + 进程内 `import tomori.vision` | `SHA256SUMS` 校验、权重启用门禁（`docs/RUNBOOK.md` §6.6）、CPU/CUDA 本地推理验证与 FastAPI 联调 | **严禁本地训练、严禁本地开发训练脚本、严禁「本地 CPU 冒烟」路径** |
 
 - **基线回退策略（权重未回传时）**：`YOLO_INFERENCE_MODE=auto` 下允许启用 `baseline_pretrained_opencv`（真实执行 Layer 0 魔数/尺寸 + Layer 1 清晰度/昼夜亮度 + Layer 3 ROI 物理启发式提取与画框，**严禁返回硬编码假 JSON**），必须置 `ai_is_baseline_mode=true` 且置信度受 DB `CHECK` 封顶 **`0.65`**；`strict_custom` 模式下缺权重或门禁不通过一律返 `503 VISION_DISABLED`。
 
-#### ⚠️ `vision/` 目录 8 个 `.py` 当前精确状态（`F14` 诚实声明）
+#### ✅ `src/tomori/vision/` 11 个模块已落盘（新增只读 EDA `eda.py`，另有 `dataset_prep.py`、`trainer.py`）与阶段二修复状态（`F14` 诚实声明）
 
-`vision/` 下现有 `__init__.py`、`config.py`、`contract.py`、`errors.py`、`image_io.py`、`metrics.py`、`whitelist.py`、`baseline.py` 共 8 个文件，属**已撤回 `task-10` 留下的未经运行验证、未经测试的预研草稿**，**未纳入阶段一交付范围**，绝不可记为「视觉模块已实现」。阶段二实现放行后须优先修正以下三处草稿与定稿差异：
-1. `vision/errors.py:18,25`：删除私有码 `VISION_WEIGHTS_NOT_READY`，统一改为 `VISION_DISABLED`（`503`），并补齐 `VISION_TIMEOUT`/`VISION_INFERENCE_FAILED`/`TOO_MANY_FILES`/`NO_FILES`/`INTERNAL_ERROR`；
-2. `vision/whitelist.py:8,168-173`：将 `n_frames != 1` 多帧动图抛出的 `MEDIA_VIDEO_STREAM_FORBIDDEN` 改为 `415 UNSUPPORTED_IMAGE_FORMAT`（对齐 `docs/API.md` §3.5）；
-3. `vision/config.py:106` 与 `vision/contract.py:41`：补全 `SEVERITY_HINTS` / `SeverityHint` 的 `"P4"`。
+原根级 `vision/` 下的 8 个预研草稿（`__init__.py`、`config.py`、`contract.py`、`errors.py`、`image_io.py`、`metrics.py`、`whitelist.py`、`baseline.py`）**已于阶段二迁入 `src/tomori/vision/`，并新增 `client.py`、`mapping.py` 与只读数据集 EDA 工具 `eda.py`（共 11 个模块；另有数据准备与训练流水线模块 `dataset_prep.py`、`trainer.py`，目录内共 13 个 `.py` 文件），原根级 `vision/*.py` 已移除、仅留空目录 `vision/` 供运行时 `weights/` 与 `reports/` 产物（gitignored）**。阶段二实现期已完成下列 5 项修复与补充（待随全链路 pytest / 远端训练产物继续实测验收）：
+1. **`src/tomori/vision/errors.py`**：已删除私有码 `VISION_WEIGHTS_NOT_READY`，统一改为 `VISION_DISABLED`（`503`），并补齐 `VISION_TIMEOUT` / `VISION_INFERENCE_FAILED` / `TOO_MANY_FILES` / `NO_FILES` / `INTERNAL_ERROR` 及 `vision.*.manual_fallback` key；
+2. **`src/tomori/vision/whitelist.py`**：已将 `n_frames != 1` 多帧动图由 `MEDIA_VIDEO_STREAM_FORBIDDEN` 更正为 `415 UNSUPPORTED_IMAGE_FORMAT`（对齐 `docs/API.md` §3.5）；
+3. **`src/tomori/vision/config.py` & `src/tomori/vision/contract.py`**：已补全 `SEVERITY_HINTS` / `SeverityHint` 的 `"P4"`、`EXPECTED_YOLO_IMG_SIZE = 1280` 及基线模式 `BASELINE_CONFIDENCE_CAP = 0.65` 校验；
+4. **`src/tomori/vision/client.py` & `src/tomori/vision/mapping.py`**：已落地函数内延迟重依赖导入（保证纯后端无 `--extra vision` 可安全 import `tomori.vision`）与标签→业务枚举映射及 `streetlight_on` 参照回传（`D-30`）；
+5. **`src/tomori/vision/eda.py`（新增只读数据集 EDA 工具，另有 `dataset_prep.py`、`trainer.py`）**：只读统计数据集分辨率/长宽比/体积、YOLO 标注框尺度分布与 COCO 尺度桶、HSV `V` 昼夜亮度及 `video_id` 分组规模，并定量对比 `1024 vs 1280` 小目标保留率（模块顶层仅导入标准库、遵循 `D1` 延迟导入且绝不写/改数据集源文件；`dataset_prep.py` 与 `trainer.py` 详见 `docs/TRAIN.md` §2–§3）。
 
 #### 数据集定案（`D-29` ✅ 已裁定）与 D1–D7 真实元数据备查表
 
@@ -1223,18 +1259,20 @@ WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
 
 | 工具 / 命令 | 作用域与规则 | 当前状态 / `D-08` 口径 |
 |---|---|---|
-| `uv run ruff check .` | Python 代码质量与静态缺陷检查（**与下一条正交，必须独立运行**） | 阶段二应用代码落地起硬门禁 |
-| `uv run ruff format --check .` | Python 代码格式一致性检查 | 同上 |
-| `uv run mypy backend vision` | Python 静态类型检查（覆盖 `AsyncSession` / `Mapped[]` / Pydantic） | **`D-08` 工程定案**：阶段一未预装未运行；阶段二初期只报告不阻塞，存量清零后转硬门禁 |
+| `uv run ruff check src tests` | Python 代码质量与静态缺陷检查（**与下一条正交，必须独立运行**） | 阶段二应用代码落地起硬门禁 |
+| `uv run ruff format --check src tests` | Python 代码格式一致性检查 | 同上 |
+| `uv run mypy src/tomori` | Python 静态类型检查（覆盖 `AsyncSession` / `Mapped[]` / Pydantic） | **`D-08` 工程定案**：阶段一未预装未运行；阶段二初期只报告不阻塞，存量清零后转硬门禁 |
 | `pnpm --dir web typecheck` | 运行 `vue-tsc --noEmit`（锁 `typescript@6.0.3`，防 TS7 崩溃） | 阶段二 `web/` 初始化起硬门禁 |
 | `pnpm --dir web lint` / `pnpm --dir web build` | 前端规范校验与生产构建验证 | 同上 |
+| `uv run alembic -c alembic.ini upgrade head` | 根级 `alembic.ini` 执行 `migrations/` 全量异步迁移（需配 §4.1/§4.5 实测 SQL 核对） | 阶段二 `migrations/` 落地起硬门禁 |
+| `uv run pytest tests` | Python 单元与集成测试（`tests/unit/` + `tests/integration/`；E2E 见下行独立串行门禁） | 阶段二 `tests/` 初始化起硬门禁 |
 | `uv run pytest tests/e2e` | **Python `pytest-playwright`**：必须核验 `collect N == junit tests N == passed N == artifacts N`，单进程串行并受 `claim-e2e` 锁保护 | 见 `docs/team/TEAM.md` §6 & `docs/RUNBOOK.md` §4 |
 
 #### 阶段二首日必跑实测项
 
 1. **`D-20` / `D-21` / `D-40` Chromium 实测闭环**：在真实 Chromium 下验证 A/B/C 三类代表组件的 `fill()`/`check()`/`Teleport` 挂载、验证 `el-option` 属性是否真透传至选项 DOM、验证 `el-upload` 内部 `<input type="file">` 定位（不可控则立即改用原生 `<input type="file">` 外包封装）。
-2. **`D-22` OpenCV 5.x 兼容实测**：验证 `opencv-python-headless==5.1.0.95` 在 `vision/metrics.py`、`vision/baseline.py`（`cv2.imread`/`cvtColor`/`Laplacian`/`Canny`/`connectedComponentsWithStats`）的返回值与签名兼容性；若出现破坏性变更则降锁 4.x 末版。
-3. **17 表真 PG 17.12 迁移对账**：在 `tomori_test` 首次执行 `alembic upgrade head` 后，跑通 §4.1 5 条计数 SQL、§4.5 循环外键 `pg_constraint` 查询与 5 条迁移期断言。
+2. **`D-22` OpenCV 5.x 兼容实测**：验证 `opencv-python-headless==5.1.0.95` 在 `src/tomori/vision/metrics.py`、`src/tomori/vision/baseline.py`（`cv2.imread`/`cvtColor`/`Laplacian`/`Canny`/`connectedComponentsWithStats`）的返回值与签名兼容性；若出现破坏性变更则降锁 4.x 末版。
+3. **17 表真 PG 17.12 迁移对账**：在 `tomori_test` 首次执行 `uv run alembic -c alembic.ini upgrade head` 后，跑通 §4.1 5 条计数 SQL、§4.5 循环外键 `pg_constraint` 查询与 5 条迁移期断言。
 
 ---
 
@@ -1267,7 +1305,7 @@ WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
 | 原编号 | 原归属域（本文件对应节） | `docs/DECISION.md` | 最终状态 |
 |---|---|---|---|
 | `TS-1` | 后端 ORM 锁 2.0 线（本文 §1.2） | **`D-05`** | ✅ 已裁定：维持 `sqlalchemy[asyncio]>=2.0.58,<2.1` |
-| `TS-2` | 模型选型与尺寸（本文 §5.3） | **`D-06`** + **`D-33`** + **`D-28`** | ✅ 已裁定：只用 `yolo26s.pt`、`imgsz=1024`，远端训练本地推理 |
+| `TS-2` | 模型选型与尺寸（本文 §5.3） | **`D-06`** + **`D-33`** + **`D-28`** | ✅ 已裁定：只用 `yolo26s.pt`、`imgsz=1280`，远端训练本地推理 |
 | `TS-3` | OpenCV 5.x 兼容性（本文 §6.1） | **`D-22`** | 🟢 工程定案（阶段二首验） |
 | `TS-4` | 前端精确版本 pin（本文 §1.3） | **`D-23`** | 🟢 工程定案（`^` + `pnpm-lock.yaml`） |
 | `TS-5` | `el-input` `data-testid` 透传（本文 §1.3） | **`D-34`** | 🟢 已闭合（源码级确证落内层 `<input>`） |
@@ -1299,17 +1337,17 @@ WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
 - 全项目 `40/40` 裁决已全部定案（含 `D-29`、`D-30`）。
 
 **未证实与未运行范围（🟡 / 🔴）**：
-- **阶段一无任何应用代码、数据库迁移或测试被运行过**：`backend/`、`web/`、`tests/`、`migrations/` 均不存在；根 `pyproject.toml` 仍是 `uv init` 0 依赖脚手架；`vision/` 仅存 8 个未验证预研草稿 `.py`（待阶段二按 §5.3 修正 3 处差异）。
+- **阶段一与阶段二当前落地边界**：阶段一冻结基线（`42eb94e`）结束时无应用代码、迁移与测试运行；进入阶段二后，根级 `pyproject.toml`、`migrations/versions/0001..0004`（含 `0003_circular_fk_scheme_b.py`）与 `src/tomori/vision/` 11 个模块（含新增只读 EDA 工具 `eda.py`，另有 `dataset_prep.py`、`trainer.py`，共 13 个 `.py` 文件）已落盘且原根级 `vision/*.py` 已移除（根级 `vision/` 仅留空目录供运行时 `weights/` 与 `reports/`），其余业务/前端/测试链路及远端训练权重仍按进度推进与验收。
 - **17 表全量 DDL 未在真实 PostgreSQL 执行**：`76/41/22/37/6/12` 是 DDL 文本计数，非 `information_schema` 实测值；「外键列数 41」与未来 `pg_constraint` `contype='f'` 约束数允许存在差异，迁移落地后须逐条核对解释。
-- `mypy` 未安装运行；27 行（30 实验）变异卡全部未执行；`D-20`/`D-21`/`D-40` 真实 Chromium 下的 `fill()`/`check()`/`Teleport` 与 `el-option`/`el-upload` 定位未实测；`D-22` `opencv-python-headless` 5.x 兼容性与 `httpx2` `ASGITransport` 签名未实测。
-- `vision/config.py` 亮度/清晰度阈值与 `epochs=120`、`batch=-1` 实机显存探测均属工程初值，待阶段二远端 GPU 实测标定；破损类 `FIXTURE_DAMAGED` 检出率不作承诺（`D-18`）。
+- `mypy` 运行全量业务代码、27 行（30 实验）变异卡、`D-20`/`D-21`/`D-40` 真实 Chromium 下的 `fill()`/`check()`/`Teleport` 与 `el-option`/`el-upload` 定位、`D-22` `opencv-python-headless` 5.x 兼容及 `httpx2` `ASGITransport` 签名尚待对应阶段二模块/测试完成后实测闭环。
+- `src/tomori/vision/config.py`（已迁入 `src/tomori/vision/` 并补 `"P4"`）亮度/清晰度阈值与 `epochs=500, patience=20`（附早停源码诊断与可选 `--mosaic-polish-epochs`）、`batch=-1` 实机显存探测均属工程初值，待阶段二远端 GPU 实测标定；破损类 `FIXTURE_DAMAGED` 检出率不作承诺（`D-18`）。
 
 **明确不属于本文档的**：
 - 9 UC / 29 FR / 29 VC 需求编号与验收判据 → `docs/REQUIREMENTS.md`
 - 57 条路由行（含 2 条合并行，展开为 60 个 `(method, path)` 端点）、34 错误码细节、请求/响应与 128 冻结 `data-testid` 清单 → `docs/API.md`
 - 40 条全项目裁决台账与用户原话原文 → `docs/DECISION.md`
 - 本地容器部署、备份恢复与远端训练操作规程 → `docs/RUNBOOK.md`（`dev-ops` 独占）
-- 团队 9 角色职责、写入域边界、反假绿体系与提交门禁 → `docs/team/TEAM.md`、`docs/team/LEAD.md`
+- 团队 9 角色职责、写入域边界、反假绿体系与提交门禁 → `docs/team/TEAM.md`、`docs/team/LEAD.md`（本地过程产物，已 `.gitignore` 不入库）
 
 ---
 
@@ -1318,7 +1356,11 @@ WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
 | 日期 | 变更 | 触发 |
 |---|---|---|
 | 2026-11-21 | 三源初版定稿与审计修正：建立 17 表（`76 CHECK / 41 外键列 / 22 UNIQUE / 37 普通索引 / 6 部分唯一 / 12 非唯一部分索引`）、4 状态机（`29 态 / 36 边 / 11 终态 / 0 死路`，修正通知 `SENT` 为终态）、`fault_evidences.ticket_id` 可空与已知取舍、`YOLO26` 四条官方出处、Element Plus `data-testid` 三类透传实测推翻误判、Context7 双形态故障如实披露 | `task-7` / `task-13` / `task-15` / `task-18` / `audits/stage1-audit.md` |
-| 2026-11-24 | 阶段一定案同步：锁定 `sqlalchemy[asyncio]>=2.0.58,<2.1`（`D-05`）、PG `17.12`（`D-10`）、唯一底模 `yolo26s.pt` + `imgsz=1024` + 远端训练本地推理（`D-06`/`D-28`）；废除无依据四档分钟数与 `100×100` 权重魔数，改锁郑州市令第 152 号 48h 基线与表驱动确定性规则分级 `grading_rules`（144 组合全覆盖，`D-11`–`D-13`）；补齐 `MUT-05a/05b/15/16/17` 变异卡 | `task-26` / `task-29` / `task-37` |
+| 2026-11-24 | 阶段一定案同步：锁定 `sqlalchemy[asyncio]>=2.0.58,<2.1`（`D-05`）、PG `17.12`（`D-10`）、唯一底模 `yolo26s.pt` + 统一输入尺寸（初值 `1024`，已于 `task-77` 升级锁定 `1280`）+ 远端训练本地推理（`D-06`/`D-28`）；废除无依据四档分钟数与 `100×100` 权重魔数，改锁郑州市令第 152 号 48h 基线与表驱动确定性规则分级 `grading_rules`（144 组合全覆盖，`D-11`–`D-13`）；补齐 `MUT-05a/05b/15/16/17` 变异卡 | `task-26` / `task-29` / `task-37` |
 | 2026-11-24 | **`task-44` 三合一精简重写为 `docs/DESIGN.md`**：由原 `docs/TECH-STACK.md`、`docs/BUSINESS-LOGIC.md`、`docs/SCHEMA.md`（曾用名 `docs/SCHEMA-DESIGN.md`）合并而成，完整保留全部契约；对齐 `docs/RUNBOOK.md` §6.1.1–§6.1.2 远端 `/root/autodl-tmp/tomori/` 与预装 `/root/.local/bin/uv 0.13.7` 实测事实；融入用户最新裁决 **`D-29`**（个人本地项目直接使用数据集、保留 D1–D7 真实元数据）与 **`D-30`**（夜间正常亮灯 `streetlight_on` 回传参照框、`is_fault_candidate=false`）；同步 40/40 零待决口径 | `task-44` 文档整合 + 用户 `D-29`/`D-30` 裁决 |
-| 2026-11-24 | **`task-52` 终审收口**：① **P1-3**：移除 `.env` 视觉配置表中错配的超时环境变量，统一 `VISION_TIMEOUT_SECONDS = 60` 为后端代码常量（不入 `.env`）；② **P1-4**：消除 §3.5「两阶段占位」矛盾，定案 `pg_try_advisory_xact_lock(hashtextextended(..., 0))` 事务级咨询锁 + 锁内双重读取 + `audit_logs` 严格 append-only；③ **P1-5**：§4.5 循环外键统一为方案 B（`acceptance_records.rework_order_id` 随表 inline FK + 一次 `op.create_foreign_key` 补齐 `fk_rework_orders_source_acceptance_id_acceptance_records`）；④ **P2-3**：`vision` extra 补 `onnx`/`onnxslim` 并统一 `ultralytics==8.4.216`、`opencv-python-headless>=5.1.0,<6`；⑤ **P2-4**：更正旧版 `el-teleport` 写法为 Vue 原生 `<teleport>`（Element Plus PR `#23219`）；⑥ **P2-11 / P2-12 / P3-4**：Context7 在 §1.2/§1.4/§8.1 统一为「间歇性不稳定，不可作唯一取证通道」、§8.1 补 `57 条路由行（含 2 条合并行，初记口径已于 task-58 修正为展开 60 个 (method, path) 端点）`、`ck_audit_logs_payload_hash_format` 补 `IS NULL OR`、`A15`–`A17` 与 `review-resolve` 补「（若存在活跃返修单）」限定 | `task-52` 阶段一终审收口（`audits` 审计与 Lead 裁决） |
+| 2026-11-24 | **`task-52` 终审收口**：① **P1-3**：移除 `.env` 视觉配置表中错配的超时环境变量，统一 `VISION_TIMEOUT_SECONDS = 60` 为后端代码常量（不入 `.env`）；② **P1-4**：消除 §3.5「两阶段占位」矛盾，定案 `pg_try_advisory_xact_lock(hashtextextended(..., 0))` 事务级咨询锁 + 锁内双重读取 + `audit_logs` 严格 append-only；③ **P1-5**：§4.5 循环外键统一为方案 B（`acceptance_records.rework_order_id` 随表 inline FK = `fk_acceptance_records_rework_order_id_rework_orders`；两表建成后**单次** `op.create_foreign_key` 后补 `fk_rework_orders_source_acceptance_id_acceptance_records`，双向共 2 条；另第 11 步建 `dispatch_records` 时 `rework_order_id` 仅建可空列、待第 14 步建成后显式后补 `fk_dispatch_records_rework_order_id_rework_orders` 前向 FK）；④ **P2-3**：`vision` extra 补 `onnx`/`onnxslim` 并统一 `ultralytics==8.4.216`、`opencv-python-headless>=5.1.0,<6`；⑤ **P2-4**：更正旧版 `el-teleport` 写法为 Vue 原生 `<teleport>`（Element Plus PR `#23219`）；⑥ **P2-11 / P2-12 / P3-4**：Context7 在 §1.2/§1.4/§8.1 统一为「间歇性不稳定，不可作唯一取证通道」、§8.1 补 `57 条路由行（含 2 条合并行，初记口径已于 task-58 修正为展开 60 个 (method, path) 端点）`、`ck_audit_logs_payload_hash_format` 补 `IS NULL OR`、`A15`–`A17` 与 `review-resolve` 补「（若存在活跃返修单）」限定 | `task-52` 阶段一终审收口（`audits` 审计与 Lead 裁决） |
 | 2026-11-24（task-58） | **P2-3 / P2-12 口径同步**：① **P2-3**：§1.2 依赖表与 `[project.optional-dependencies] vision` 更新 `onnx`（实测 `1.23.2`，约束 `>=1.16.0,<2.0.0`，`requires_python >=3.10`）与 `onnxslim`（实测 `0.1.99`，约束 `>=0.1.82`，`requires_python >=3.8`），并补充对齐 `ultralytics==8.4.216` `exporter.py:1207/1217` 的 `check_requirements(("onnx>=1.16.0,<2.0.0", "onnxslim>=0.1.82"))` 硬要求说明，防止 `YOLO_AUTOINSTALL=False` 下 `0.1.31..0.1.81` 被拒导；② **P2-12**：将 §8.1 API 指针更新为 `展开为 60 个 (method, path) 端点` 并同步修正 `task-52` 记录中的旧组合数口径 | `task-58` 二次审计收口 |
+| 2026-11-24（task-62） | **`src layout` 架构与门禁重写**：按用户放行阶段二并明确 `src layout` 与 Lead 架构裁决重写 §1.1（`pyproject.toml` 单包 `module-root="src"`、包名 `tomori`，所有 import 统一为 `tomori.*`）；全仓原拟议 `backend` 目录结构降维收拢为 `src/tomori/`；`alembic.ini` 与 `migrations/` 由原拟议子目录上提至仓库根；视觉源码迁入 `src/tomori/vision/`（`D-37` 改为进程内 `tomori.vision` 子包，保留 `D1` 函数内延迟 import 纪律），而运行时产物 `weights/` 与 `reports/` 仍在根级 `vision/`（gitignored）；同步修正 §0、§1.1、§3.1、§5.1–§5.3、§6.1 门禁命令（`ruff` / `mypy` / `pytest` / `alembic`）及 §8.1 诚实边界 | 用户放行阶段二指定 `src layout` + `task-62` Lead 架构裁决 |
+| 2026-11-24（task-66） | **域外旧平铺目录残留清零与 `§1.2` 实测对齐**：① `README.md`、`docs/REQUIREMENTS.md`、`docs/DECISION.md` 三处域外旧平铺后端目录名全部清零并统一为 `src layout` 口径（`src/tomori/` 单包 + 根级 `alembic.ini`/`migrations/` + 根级 `vision/` 仅运行时产物），同时区分「阶段一冻结基线 `42eb94e` 时无应用代码」与「阶段二已放行实现」；② `DECISION.md` 数字口径补全为 `57 条路由行（展开为 60 个具体 (method, path) 端点）`；③ **§1.2 与本机实测 `pyproject.toml` 对齐**：`[build-system]` 定案 `uv_build>=0.8.14,<0.14` + `[tool.uv.build-backend] module-name="tomori"/module-root="src"`、新增 **`[tool.uv] override-dependencies = [\"opencv-python; python_version < '0'\"]`**（`ultralytics==8.4.216` 无条件拉 GUI `opencv-python` 会覆盖 headless，须用永假 marker 覆盖）、`uvicorn[standard]>=0.54.0` 与 `httpx>=0.28.1,<1.0.0` 显式入主依赖、`respx>=0.23.1`（仅支持 `httpx`）、`vision` extra 补 `numpy>=2.0.0,<3.0.0`、`mypy>=2.3`（实测解析 `2.4.1`）、`sqlalchemy 2.0.58` 的 `requires_python` 校正为 `>=3.7`；④ 修正 `task-52` 记录中循环外键描述为「1 条 inline + 1 次后补 ALTER 双向共 2 条 + 第 11 步 `dispatch_records.rework_order_id` 前向 FK 后补」 | `task-66` |
+| 2026-11-24（task-71） | **阶段二实落盘微同步**：① §1.1 迁移脚本名由原长名更新为实际落盘文件名 **`0003_circular_fk_scheme_b.py`**（Alembic `alembic_version.version_num` 列宽硬编码 `VARCHAR(32)`，34 字符会截断报错，故缩短为 25 字符）；② §1.1 / §5.3 / §8.1 同步 `src/tomori/vision/` 10 个模块已迁入并完成 4 项修复（原根级 `vision/*.py` 已移除，仅留空目录 `vision/` 供运行时 `weights/` 与 `reports/` 产物） | `task-71`（对齐 `migrations/` 与 `src/tomori/vision/` 实落盘） |
+| 2026-11-24（task-77） | **视觉分辨率 1280 与长周期训练参数同步**：① 按 `D-28` 与 D1 全量 EDA（8,428 图 `81.86%` 为 `1280×720`）将 §1.1 `YOLO_IMG_SIZE`、§5.3 `imgsz` 与 ONNX 静态输入 `[1, 3, 1280, 1280]` 及 §7 `TS-2` 同步升级为 **`1280`**（`2×640` 1:1 零下采样并指向 `docs/TRAIN.md` §2.2）；② §5.3 与 §8.1 远端训练参数同步为 **`epochs=500, patience=20`**（配合 `early_stopping_diagnostics` 早停源码诊断与可选 `--mosaic-polish-epochs`，详见 `docs/TRAIN.md` §3）；③ §1.1 / §5.3 / §8.1 登记 `src/tomori/vision/` 已落盘 11 个模块（新增只读 EDA 工具 `eda.py`，另有 `dataset_prep.py`、`trainer.py`，共 13 个 `.py` 文件）；同步修正 `task-26` 旧记录中 `imgsz` 字面残留 | `task-77`（`D-28` 1280 + 500 epochs/patience 20 + `eda.py` + `TRAIN.md` EDA 引用） |

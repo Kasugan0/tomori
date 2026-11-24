@@ -6,28 +6,30 @@
 
 ## 当前状态
 
-> **阶段一定稿已完成，全部 40 条裁决已收口落定（`20 ✅ / 20 🟢`，零待决项），待用户最终放行阶段二实现。**
+> **阶段一定稿已完成**（冻结基线 `42eb94e`，全部 40 条裁决已收口落定 `20 ✅ / 20 🟢`，零待决项）；**用户现已放行阶段二实现，代码布局采用 `src layout`**。
 
-仓库当前**没有任何业务代码**——`backend/`、`web/`、`tests/`、`migrations/` 均不存在，`pyproject.toml` 的 `dependencies = []`。本仓库现阶段的交付物是精简合并后的**设计文档套件**（`docs/` 根下仅 5 份核心文档：`DECISION.md`、`REQUIREMENTS.md`、`DESIGN.md`、`API.md`、`RUNBOOK.md`，外加 `docs/team/`），等待用户最终放行后方可进入阶段二实现。
+**阶段一冻结基线（`42eb94e`）时仓库没有任何应用代码**：无 `src/tomori/` 业务实现、无 `web/`、无 `tests/`、无 `migrations/`，`pyproject.toml` 的 `dependencies = []`。该基线当时唯一的交付物是精简合并后的**设计文档套件**（`docs/` 根下仅 5 份核心文档：`DECISION.md`、`REQUIREMENTS.md`、`DESIGN.md`、`API.md`、`RUNBOOK.md`；`docs/team/` 属本地过程产物，已 `.gitignore` 不入库）。
 
-仓库里仅有的可运行内容：`deploy/stack-guard.sh`（本地 PostgreSQL 栈启停与环境校验脚本，**已实测可用**）、`compose.yaml`（PostgreSQL 容器编排）、`deploy/postgres/init-dbs.sql`（创建 `tomori_dev` / `tomori_test`）。根目录的 `main.py` 是 `uv init` 留下的 hello world 占位，不是程序入口。
+**阶段二已放行（`src layout`）**：Python 源码统一位于 **`src/tomori/`** 单包（所有 import 为 `tomori.*`），`alembic.ini` 与 `migrations/` 位于**仓库根**，前端在 `web/`，测试在 `tests/`；根级 `vision/` 此后**仅存运行时产物**（`weights/`、`reports/`，gitignored），视觉源码位于 `src/tomori/vision/`。布局权威定义见 `docs/DESIGN.md` §1.1。
+
+仓库里可运行的运维内容：`deploy/stack-guard.sh`（本地 PostgreSQL 栈启停与环境校验脚本，**已实测可用**）、`compose.yaml`（PostgreSQL 容器编排）、`deploy/postgres/init-dbs.sql`（创建 `tomori_dev` / `tomori_test`）。
 
 ---
 
 ## 文档导航
 
-> `docs/` 根下仅保留以下 **5 份核心文档**（`DECISION.md`、`REQUIREMENTS.md`、`DESIGN.md`、`API.md`、`RUNBOOK.md`），外加 `docs/team/` 团队方法论与 `audits/` 历史快照。
+> `docs/` 根下现包含以下 **6 份核心文档**入库（阶段一定稿 5 份 `DECISION.md`、`REQUIREMENTS.md`、`DESIGN.md`、`API.md`、`RUNBOOK.md` + 阶段二新增用户请求的模型训练方案 **`TRAIN.md`**）；`docs/team/` 与 `audits/` 属**本地过程产物**（已 `.gitignore`，不入库）。
 
 | 文档 | 内容 |
 |---|---|
 | **[`docs/DECISION.md`](docs/DECISION.md)** | ⭐ **全项目裁决事项清单：40 条裁决已全部收口（`20 ✅ / 20 🟢`，按四档组织）—— 阶段一验收与定案口径的唯一入口** |
 | [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) | 3 个角色 / 9 个核心用例 / 29 条功能需求 + 29 条可验证判据 / `UC ↔ FR ↔ VC ↔ 测试层次` 追溯矩阵 / 五项核心红线（N1–N5）与郑州 48h 法定基线 |
-| [`docs/DESIGN.md`](docs/DESIGN.md) | **系统设计与技术定案（合并原技术栈 / 业务逻辑 / Schema 三份文档）**：系统架构与技术栈（含 8 条前端版本陷阱）、4 套状态机（29 态 / 36 边 / 11 终态 / 0 死路）、三大核心机制与郑州 48h SLA、17 张业务表（76 CHECK / 41 FK / 22 UNIQUE / 37 索引 / 6 部分唯一）、YOLO26 视觉管线（`yolo26s.pt @ 1024`）与 27 行（30 实验）变异基线 |
+| [`docs/DESIGN.md`](docs/DESIGN.md) | **系统设计与技术定案（合并原技术栈 / 业务逻辑 / Schema 三份文档）**：系统架构与技术栈（含 8 条前端版本陷阱）、4 套状态机（29 态 / 36 边 / 11 终态 / 0 死路）、三大核心机制与郑州 48h SLA、17 张业务表（76 CHECK / 41 FK / 22 UNIQUE / 37 索引 / 6 部分唯一）、YOLO26 视觉管线（`yolo26s.pt @ 1280`）与 27 行（30 实验）变异基线 |
 | [`docs/API.md`](docs/API.md) | 57 条路由行（展开为 60 个 (method, path) 端点） / 34 个 `error.code` / 12 个必需幂等端点 / 128 个已冻结 `data-testid` 锚点（121 + 第 J 组 7 项，`D-04` 已定案） |
+| [`docs/TRAIN.md`](docs/TRAIN.md) | **模型训练方案与数据集手册（`task-75` / `task-77`）**：`yolo26s.pt @ 1280` 架构、`D1–D7` 全景与 D1/D5 全量定量 EDA 实测、`1024 vs 1280` 分辨率与算力对比、Union-Find / 64-bit pHash 防泄漏清洗、`trainer.py` vs `ultralytics==8.4.216` 超参数全表（`epochs=500 + patience=20` 早停源码分析）、领域增广禁区（`flipud=0.0` / `hsv_v<=0.25` / `hsv_s<=0.4`）、`[1,300,6]` ONNX 导出与远端复现命令 |
 | [`docs/RUNBOOK.md`](docs/RUNBOOK.md) | 本地 PG 栈启停、端口分配、远端 GPU 训练管线与产物回传校验 |
-| [`docs/team/TEAM.md`](docs/team/TEAM.md) | 9 人团队角色边界、写入域矩阵、协作机制、反假绿纪律、坐标四级判据、提交协议 |
-| [`docs/team/LEAD.md`](docs/team/LEAD.md) | Lead 方法论：角色边界、裁决四段模板、审计四问、7 次判据错误诚实记录、继任者检查清单 |
-| [`audits/stage1-audit.md`](audits/stage1-audit.md) | 阶段一独立审计报告：6 项 P0 + 4 项 P1，已全部修正并复核（**历史快照，坐标以当时版本为准**） |
+
+> **本地过程产物（不入库）**：`docs/team/TEAM.md`（9 人角色边界/协作/反假绿/提交协议）、`docs/team/LEAD.md`（Lead 方法论）与 `audits/` 独立审计报告（如 `audits/stage1-audit.md` 等）属本地过程产物（已 `.gitignore`，不入库，仅本地工作树保留参考，不设仓库内可点击链接）。
 
 ---
 
@@ -38,7 +40,7 @@
 **视觉**　Ultralytics YOLO · OpenCV（进程内 Python 模块，不做独立视觉服务）
 **工具链**　`uv` · `pnpm` · Docker Compose
 
-依赖布局为**单包**：根 `pyproject.toml` 是唯一的包定义，`backend/` 与 `vision/` 作为子目录模块；视觉依赖隔离在 `[project.optional-dependencies] vision` 中，用 `uv sync --extra vision` 安装，避免 `torch` 的 GB 级体积拖累后端开发。
+依赖布局为**单包 `src layout`**：根 `pyproject.toml` 是唯一的包定义（`[tool.uv.build-backend]` 的 `module-root` 为 `src`，包名 `tomori`），源码全部位于 `src/tomori/`；视觉依赖隔离在 `[project.optional-dependencies] vision` 中，用 `uv sync --extra vision` 安装，避免 `torch` 的 GB 级体积拖累后端开发。目录树与门禁命令见 `docs/DESIGN.md` §1.1 与 §6.1。
 
 ---
 

@@ -24,7 +24,7 @@
 
 > **`alembic_version` 的口径声明**：迁移工具的版本记录表，仅一列 `version_num varchar(32)`，**不承载业务语义、不参与业务查询**。任何「数表」断言必须显式排除：`WHERE table_name <> 'alembic_version'`。
 >
-> **阶段一无数据库**：`backend/`、`web/`、`tests/`、`migrations/` 目录均不存在，「17 表」是**设计口径**（用户给定清单，详见 `docs/DESIGN.md` §4），不是 `information_schema` 实测值。
+> **阶段一无数据库**：`web/`、`tests/`、`migrations/` 在阶段一冻结时均不存在（用户现已放行阶段二，Python 源码按 `src layout` 落于 `src/tomori/`），「17 表」是**设计口径**（用户给定清单，详见 `docs/DESIGN.md` §4），不是 `information_schema` 实测值。
 
 ---
 
@@ -346,14 +346,14 @@
 - 郑州市城管局公开清单中未逐件取得全文的综合市政监管文件（见 `.team/notes/research/zhengzhou-lighting-rules.md`）尚未穷尽，部门内部非公开考核合同不在本规格承诺范围内。
 
 **未运行 / 未审计范围**：
-- **阶段一无任何应用源码与运行态**：`backend/`、`web/`、`tests/`、`migrations/` 均不存在；17 表 DDL 从未在 PostgreSQL 上执行，27 行（30 实验）变异卡与 Playwright E2E 剧本**全部未运行**。
+- **阶段一无任何应用源码与运行态**：`web/`、`tests/`、`migrations/` 在阶段一冻结时均不存在（用户现已放行阶段二，Python 源码按 `src layout` 落于 `src/tomori/`）；17 表 DDL 从未在 PostgreSQL 上执行，27 行（30 实验）变异卡与 Playwright E2E 剧本**全部未运行**。
 
 **明确不属于本文档的（跨文档指针）**：
 - 系统架构、4 套状态机（29 状态 / 36 合法边 / 11 终态 / `I1`–`I8`）、三大业务机制算法细节、17 表 Schema 与技术栈选型 → `docs/DESIGN.md`
 - 57 条路由行（展开为 60 个 `(method, path)` 端点）、34 个 `error.code`、幂等契约与 128 个冻结 `data-testid` → `docs/API.md`
 - 全项目 40 条裁决台账与用户原话档案 → `docs/DECISION.md`
 - 本地 PG 栈部署、端口分配与远端 GPU 训练/产物回传运维 → `docs/RUNBOOK.md`
-- 团队阵容、写入域边界、提交协议与反假绿质量体系 → `docs/team/TEAM.md`、`docs/team/LEAD.md`
+- 团队阵容、写入域边界、提交协议与反假绿质量体系 → `docs/team/TEAM.md`、`docs/team/LEAD.md`（本地过程产物，已 `.gitignore` 不入库）
 
 ---
 
