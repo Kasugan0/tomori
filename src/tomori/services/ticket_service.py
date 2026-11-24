@@ -109,6 +109,11 @@ _FAULT_TYPES_WITH_TICKET: frozenset[str] = frozenset(
     {"LAMP_OUT", "FIXTURE_DAMAGED", "OCCLUDED", "OTHER"}
 )
 
+# 终态工单不可复活（docs/DESIGN.md §2.1 Machine A 唯二终态）；按 docs/API.md §2.3 契约，
+# 非终态各 `evidence_type`（INSPECTION_PHOTO / ANNOTATED_PHOTO / REPAIR_PHOTO / ACCEPTANCE_PHOTO）
+# 的补传窗口保留不变，仅终态统一拒绝。
+_TERMINAL_TICKET_STATUSES: frozenset[str] = frozenset({"CLOSED", "CANCELLED"})
+
 _EVIDENCE_TYPES: frozenset[str] = frozenset(
     {"INSPECTION_PHOTO", "ANNOTATED_PHOTO", "REPAIR_PHOTO", "ACCEPTANCE_PHOTO"}
 )
@@ -1176,6 +1181,18 @@ async def upload_ticket_evidences_flow(
             VALIDATION_ERROR,
             f"不支持的证据类型 {evidence_type}",
             {"field": "evidence_type", "expected": sorted(_EVIDENCE_TYPES)},
+        )
+    # 状态机 A 终态守卫（`docs/DESIGN.md` §2.1：`CLOSED`/`CANCELLED` 不可复活）。
+    # 必须先于媒体校验与 sha256 去重，避免对已终态工单做无意义解码/写盘再落库。
+    if ticket.status in _TERMINAL_TICKET_STATUSES:
+        raise AppError(
+            INVALID_STATE_TRANSITION,
+            f"工单 {ticket.ticket_no} 已处于终态 {ticket.status}，禁止继续追加证据",
+            {
+                "ticket_id": ticket.id,
+                "status": ticket.status,
+                "evidence_type": evidence_type,
+            },
         )
     ts = _ensure_utc(now)
     validated = _validate_media_batch(raw_files, min_count=1, max_upload_bytes=max_upload_bytes)
