@@ -66,7 +66,7 @@ cp .env.example .env
   - `YOLO_IMG_SIZE=1280`：**必须与回传模型 `metrics.json` 中的 `imgsz` 完全相等**（`2×640`，`export(..., dynamic=False)` 已把输入尺寸固化进 ONNX 图 `[1, 3, 1280, 1280]`），启用门禁见 §6.6。
   - `YOLO_INFERENCE_MODE=auto`：`auto` 允许自定义权重缺失时回退基线并如实标注；`strict_custom` 绝不回退，缺失自定义权重时健康检查显式报未就绪（上线检查项见 §6.6；互斥 `503` 错误契约见 `docs/API.md` §3.4 & `docs/DESIGN.md` §5.2）。
   - `YOLO_AUTOINSTALL=False`：禁止 Ultralytics 在推理或导出期静默触发 `uv`/`pip` 自动装包（`docs/DESIGN.md` §5.3；官方出处 `https://docs.ultralytics.com/modes/export/` 与 `ultralytics==8.4.216` `ultralytics/utils/__init__.py`）。
-- **5 文档体系交叉引用**（阶段一定稿 + 阶段二 `D-28` 同步）：
+- **项目配套文档交叉引用**（与阶段二实现同步）：
   - `docs/DESIGN.md`：架构/单包目录/`pyproject.toml` `[project.optional-dependencies] vision`（§1.1–§1.2）、17 表 Schema 与异步迁移（§4）、视觉管线/昼夜判定/`D-30`/`V1–V3`/`D-29` 数据集元数据表（§5.1–§5.3）、质量门禁（§6.1）。
   - `docs/REQUIREMENTS.md`：五项核心红线 `N1–N5`（§5）、`V1–V3` 与 `D-18`/`D-29`/`D-30`/`D-31` 智能及数据集边界（§6）。
   - `docs/API.md`：`POST /tickets/ai-candidates` 媒体上传顺序与错误映射（§3.3 `413 IMAGE_SIZE_EXCEEDED`、§3.4 `503 VISION_*`、§3.5 两个 `415` 分界、§5 处理顺序；视觉降级契约 `D1–D3` 见 `docs/DESIGN.md` §5.2）。
@@ -280,7 +280,7 @@ curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="/root/autodl-tm
 ```bash
 /root/.local/bin/uv python install 3.12
 ```
-> ⚠️ **阶段二首个真实风险点**：托管 CPython 由 `python-build-standalone` 经 GitHub 拉取，而远端 GitHub 实测不稳定。官方提供 `UV_PYTHON_INSTALL_MIRROR` 变量可替换该下载源（`added in 0.2.35`），必要时再配。**本轮不放行实现，未预置镜像值**（未经核实的镜像地址不写入文档）。
+> ⚠️ **托管 Python 拉取风险与已验证回退**：托管 CPython 由 `python-build-standalone` 经 GitHub 拉取，远端实测 `uv python install 3.12` 在 45s 内超时（`rc=124`）。官方提供 `UV_PYTHON_INSTALL_MIRROR` 变量可替换该下载源（`added in 0.2.35`）；**当前远端已直接选用预装的 `/root/miniconda3/bin/python3`（3.12.3）构建 `/root/autodl-tmp/tomori/venv`**（见 §6.3 步骤 3），未预置未经核实的第三方镜像地址。
 
 ### 6.2 远端接入参数清单（**除主机名外均已实测确认**）
 
