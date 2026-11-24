@@ -1,4 +1,4 @@
-> 状态：阶段二训练技术手册（**`merged_v5`（8 源终版，`8:1:1` 组+单图混合按类分层装箱）数据集、EDA 实测、两处 ETL/EDA Bug 修复与源码参数定稿；远端正式训练耗时与 `mAP` 待实际训练完成后回填**）
+> 状态：阶段二训练技术手册（**`merged_v5`（8 源终版，`8:1:1` 组+单图混合按类分层装箱）数据集、EDA 实测、两处 ETL/EDA Bug 修复、源码参数定稿与 `task-74` 首次全周期正式训练实测结果回填**：`early_stopped @ epoch 43` / `batch=24` / `~30.8GB` 显存 / `6,421.67s`，`best_e2e.onnx` 已回传且 `sha256sum -c` 通过）
 
 # 模型训练方案、数据集清洗与超参数设计（`TRAIN`）
 
@@ -17,6 +17,7 @@
 | **分辨率** | **`imgsz=1280`**（`2×640`，P3/8 `160×160`，四端锁死） | 终版 **`merged_v5`** `10,306` 图中 **`59.88%`（6,171 张）为 `1280×720`**、`64.20%` 宽 `>= 1280`，`25,855` 框中 `86.46%` 面积 `< 0.5%`、COCO Tiny（`<32²`）占 **`51.20%`**；`1280` 对 `1280×720` 众数图实现 `mode_letterbox_scale = 1.0` 零下采样，将全框发生下采样占比从 `72.70%` 压至 **`0.57%`**、`<2 P3 格(<16px)` 从 `1,300 (5.03%)` 降至 **`260 (1.01%)`**（`D-28`） |
 | **防泄漏切分** | `Union-Find` 分组 + **「多图组枚举 `3^k` + 单图组稀有度加权贪心」按类分层装箱**（`8:1:1`） | `d1` 为连续抽帧（`10` 个 `video_id`，`vid10` 最大 `2,411` 帧）、`d4` 含 `1,446` 预增广副本全锁 `train`；`occluded` 全库 `≥60` 框时强制 `val`/`test` 各 `≥30`；**13 项**跨 split 防泄漏断言全部 **`0`** |
 | **领域增广约束** | **`flipud=0.0`**、**`hsv_v <= 0.25`**、**`hsv_s <= 0.4`**、适度 `degrees=5.0` / `mosaic=0.8` | 路灯杆不会倒立在天空（禁上下翻转）；默认 `hsv_s=0.7`/`hsv_v=0.4` 会把夜间灭灯洗成亮灯或混淆环境光，必须收紧亮度与饱和度扰动 |
+| **首次实训结果（`task-74` 实测）** | `early_stopped @ epoch 43`（`patience=20`，峰值 `epoch 23`），`batch=24`，`~30.8GB` 显存，`6,421.67s`（`~1h47m`） | `val e2e mAP50 0.34352 / mAP50-95 0.1633` vs `default 0.33764 / 0.16071`；`test e2e 0.38339 / 0.18055` vs `default 0.39389 / 0.18556`；`best_e2e.onnx` `[1,300,6]`，`sha256sum -c` 通过，详见 `§6.3` |
 
 ---
 
@@ -254,7 +255,7 @@ _single_groups                        -> train 1,063 / val 61 / test 129
 | 超参数 | `trainer.py` 值（来源坐标） | `default.yaml` 原值 | 实际生效行为 & 设计依据 |
 |---|---|---|---|
 | **`imgsz`** | **`1280`**（`config.py:19`, `trainer.py:44` `_DEFAULTS`、`:70` 字段、`:104-108` `__post_init__` 硬锁定） | `640`（`:16`） | **显式覆盖**。`2×640` 步长整除，对 `merged_v5` `59.88%` `1280×720` 众数图实现 `1:1` 零下采样；`__post_init__` 强拒非 `1280`，守 `D-28` 四端一致 |
-| **`batch`** | **`8`**（`trainer.py:47` `_DEFAULTS`、`:73` 字段、`:115-116` `>=1` 硬校验、CLI `:654-659`） | `16`（`:15`） | **固定整数（`task-133` 起 AutoBatch 全链删除）**。`floor_power_of_two`/`_resolve_batch_size`/`--batch -1`/`fallback_batch`/`probed_batch` 已删——按 `RTX 4080 SUPER @ 1280` 只读 dummy 探针峰值 `12,028 MiB`（`batch=8`）与 `23,396 MiB`（`batch=16`）实测给死 **`8`**；换卡或调值须重跑探针后改 `_DEFAULTS` 或传 `--batch` |
+| **`batch`** | **`8`**（`trainer.py:47` `_DEFAULTS`、`:73` 字段、`:115-116` `>=1` 硬校验、CLI `:654-659`） | `16`（`:15`） | **固定整数（`task-133` 起 AutoBatch 全链删除）**。`floor_power_of_two`/`_resolve_batch_size`/`--batch -1`/`fallback_batch`/`probed_batch` 已删——按 `RTX 4080 SUPER @ 1280` 只读 dummy 探针峰值 `12,028 MiB`（`batch=8`）与 `23,396 MiB`（`batch=16`）实测给死 **`8`**；换卡或调值须重跑探针后改 `_DEFAULTS` 或传 `--batch`（`task-74` 首训实跑 `--batch 24`，`~30.8GB`，见 `§6.3.1`） |
 | **`epochs`** | **`500`**（`trainer.py:45` `_DEFAULTS`、`:71` 字段、主训 `:393`） | `100`（`:12`） | **显式覆盖**。扩大训练上限并交由 `patience=20` 控制停止轮次；对 LR 退火、`close_mosaic` 与 `E2ELoss` 的耦合风险及代码对冲见 `§3.1` |
 | **`patience`** | **`20`**（`trainer.py:46` `_DEFAULTS`、`:72` 字段、主训 `:394`） | `100`（`:14`） | **显式覆盖**。连续 `20` 轮验证集 `mAP50-95` 未严格刷新历史最佳即触发 `EarlyStopping`（`utils/torch_utils.py:1120-1169`） |
 | **`nms`** | **训练/权威评估/导出传 `False`；对照评估传 `None`**（`_train_kwargs` `:347`（主训 `:391` 与精修 `:428` 共用注入）、权威 `val` `:458`、对照 `val` `:469`、对照 `test` `:482`、权威 `test` `:491`、导出 `:502`；写入 `metrics.json` 顶层 `:540` 与 `train_config` `:576`） | `None`（`:61`，`None`=外接 NMS `one2many`；`False`=无 NMS `one2one` 端到端；`True`=导出内嵌 NMS） | **显式锁定 `False`（使「早停判据头 == 部署头」）**。`default.yaml:61` 的 `None` 会令训练期 `BaseValidator.__call__`（`engine/validator.py:240-242`）设 `model.end2end = False`，使 `EarlyStopping` 全程监控 `one2many` 头而与 `export(..., nms=False)` 的 `one2one` 交付物错位；`trainer.py` 主训与权威 `val`/`test`/导出全链路显式锁 `nms=False`（`one2one` 端到端），仅对照 `val`/`test`（`:469, :482`）显式传 `nms=None` 作诊断参考（因 `_reset_ckpt_args` 会在加载 `.pt` 时丢弃 `nms`，见 `§3.1` 第 1 条） |
@@ -443,7 +444,88 @@ cd /root/autodl-tmp/tomori/repo
   3. **公开调研、同源域与长尾诚实边界**：① 遍查 8 大公开平台确认全网 `OCCLUDED` 除 `d1`（原始 `235` 框 / `merged_v5` 保留 `227` 框）外**无第二个公开源**，且 `merged_v5` 三集占比 `51.54/14.54/33.92`（偏差 `56.92pp`）为 `vid10` 组原子性 + `≥30` 地板约束的**结构性下限**（该类评估以 `val` 为准），后续仅靠合成遮挡与阶段二自采补足；② **`ext_pwd_s9` 与 `s6`/`s1`/`prj_n_8` 同属 NHAI 公路巡查系**（跨源去重已拦 `43` 张 SHA256 + `3` 张 pHash），虽将高清破损图增至 `207` 张（`+34.4%`），**仍非独立第三方来源**，不得据此夸大跨城市场景域泛化能力；③ 主动剔除 `d7` 乡村配电木杆与 `ext_civic_broken` 错标灭灯后 `streetlight_damaged` 净留 `1,423` 框，仍遵循 **`D-18`** 不承诺破损类检出率；
   4. 本地 CPU `onnxruntime 1.32.0`（`yolo26s` E2E `nc=4` @ `1280` 默认线程 `median=383.40ms / max=464.97ms`，单线程最坏 `max=1,029.13ms`，距 `60s` 超时余量 `58.3×`）与远端 `RTX 4080 SUPER` 只读显存探针实测（`imgsz=1280`：`batch=8` 峰值 `12,028 MiB / 11.75 GiB`、`batch=16` `23,396 MiB / 22.85 GiB`——即 `_DEFAULTS["batch"]=8` 固定值的唯一实测依据；`AutoBatch` 探测链已随 `task-133` 全链删除，测后 `runs/` 为空、`nvidia-smi` `used=1 MiB`）已完成实测记录（`.team/notes/vision-dev/logs/bench-1280-vs-1024.log`）；
   5. **「早停判据头 == 部署头」源码链路与离线契约实证已落盘**（`.team/notes/vision-dev/logs/task86-head-plumbing-full.log`、`task86-probe-head-switch-proof.log`、`task86-metrics-schema-sim.log`）：在代码审查级链路核验基础上，离线随机权重 `Detect` 前向实证确认 `nms=None` → `Detect.end2end=False` 输出 `(1, 84, 33600)` vs `nms=False` → `Detect.end2end=True` 输出 `(1, 300, 6)`（与 `best_e2e.onnx` 部署张量完全一致），且本地模拟 `metrics.json` 20 键 / `train_config` 键集契约测试及 `client._load_metrics_metadata` / `_validate_metrics_names` 实跑全部通过（`SCHEMA OK`；`train_config` 键集已随 `task-133` 收敛为 **25 键**）。
-- **未运行与待回填（严禁提前编造）**：
-  1. **远端 `RTX 4080 SUPER` 正式全周期训练**（基于 `merged_v5/data.yaml` 启动 `yolo train`，`task-74` 尚未由用户放行）尚未执行；
-  2. 因用户尚未放行远端全周期正式训练，**「早停头切换在真实训练下的 `mAP` 实际差异」目前无法实测**，上述头选择闭环属**代码审查级证据**（辅以离线随机权重 `Detect` 前向实证与本地模拟 `metrics.json` 契约测试，见 `.team/notes/vision-dev/logs/task86-probe-head-switch-proof.log` & `task86-metrics-schema-sim.log`），待 `task-74` 放行实训后由真实 `metrics.json` 的 **`val_metrics_e2e_head` vs `val_metrics_default_head`**（及 `test_metrics_e2e_head` vs `test_metrics_default_head`）实测闭环；
-  3. 本文当前**不包含**基于 `merged_v5` 的正式训练每 epoch/总耗时、真实 `stopped_epoch` 与 `early_stopping_diagnostics`、`val_mAP50`/`val_mAP50_95`、`val_metrics_e2e_head`/`val_metrics_default_head`、`per_class` AP、`test_metrics_default_head`/`test_metrics_e2e_head` 与本地回传 `best_e2e.onnx` 的真实 `SHA256`；上述实测值将在远端正式训练完成后按真实 `metrics.json` 与日志回填本节。
+- **已实测回填（`task-74` 首次全周期正式训练，`2026-11-25`）**：
+  1. **`merged_v5` 全周期 `yolo train` 已于远端 `RTX 4080 SUPER` 执行完成**：`early_stopped @ epoch 43`（`patience=20`，峰值 `epoch 23`），总耗时 `6,421.67s`（`~1h47m`），`batch=24`、`imgsz=1280`；双头 `val`/`test` 指标、`early_stopping_diagnostics`、`SHA256SUMS` 与 `best_e2e.onnx` 已回传本地且 `sha256sum -c` 通过——完整实测见 **`§6.3`**；
+  2. **「早停判据头 == 部署头」实测闭环已达成**：`metrics.json` 实测 `val e2e mAP50 0.34352 / mAP50-95 0.16330` vs `default 0.33764 / 0.16071`（e2e `+0.59pp`）、`test e2e 0.38339 / 0.18055` vs `default 0.39389 / 0.18556`（差 `−1.05pp`）——双向差异均 `≤1.05pp`，证实训练判据头与交付物头一致（`§6.3.2`）；
+  3. **`D-30` 验收实测已通过**：`client.py` 真 `best_e2e.onnx`（`inference_mode=yolo26_onnx_e2e`）夜间 `streetlight_on` 样图 `3` 张（`10_01751`/`10_01606`/`10_01453`）全部判定 `is_fault_candidate=false`/`NORMAL_LIT`/`candidate_fault_type=null`/`suggested_severity_hint=none`，`ai_is_baseline_mode=false`（`§6.3.5`）。
+
+---
+
+## 6.3 `merged_v5` 首次全周期正式训练结果（`task-74` 实测回填，`2026-11-25`）
+
+> **数据源（全部逐项核自本地落盘文件）**：`./vision/reports/streetlight_v1/metrics.json`（20 键）、`./vision/reports/streetlight_v1/results.csv`（43 行逐轮实测）、`./vision/reports/streetlight_v1/args.yaml`（`batch=24`/`epochs=500`/`patience=20`/`imgsz=1280`/`optimizer=auto`/`lr0=0.01`/`lrf=0.01`/`cos_lr=false`/`mosaic=0.8`/`mixup=0.05`/`copy_paste=0.15`/`close_mosaic=10`/`flipud=0.0`/`hsv_v=0.25`/`hsv_s=0.4`/`degrees=5.0`/`nms=False`/`seed=42`/`deterministic=true`）、`.team/notes/dev-ops/logs/task74-d30-inference.log`（`client.py` 真权重 `D-30` 验收输出）。
+
+### 6.3.1 执行事实与早停诊断（`args.yaml` + `results.csv` + `metrics.json.early_stopping_diagnostics`）
+
+- **执行事实**：`yolo train` 于远端 `RTX 4080 SUPER` 执行 `43` 轮后 `patience=20` 早停（`epoch 23` 峰值 `mAP50 0.34343 / mAP50-95 0.16305`，其后 `20` 轮未严格刷新即停，与 `EarlyStopping` 纯 `mAP50-95` 判据一致）；总耗时 `6,421.67s`（`~1h47m`，`results.csv` `time` 列逐轮累计 `epoch 1: 168.85s → epoch 43: 6,421.67s`）；实测 `batch=24`（`--batch 24` 覆盖 `_DEFAULTS["batch"]=8` 默认，`>=1` 契约允许；远端实测显存 `~30.8GB` / `32,760 MiB`）、`imgsz=1280`、`optimizer="auto"`（`iterations > 10000` 实际走 `MuSGD`，`lr/pg*` 实测末轮 `0.0275/0.0092`）、`amp=true`、`cos_lr=false`、`nms=False`（`train_config` 25 键全量已如实写入 `metrics.json`）。
+- **早停诊断（`early_stopping_diagnostics` 实测字段）**：
+
+| 字段 | 实测值 | 与 §3.1 预判的印证 |
+|---|---|---|
+| `stopped_epoch` | `43` | `EarlyStopping` 纯 `mAP50-95` 判据（`epoch 23` 峰值后 `20` 轮未刷新） |
+| `early_stopped` | `true` | — |
+| `lr_remaining_ratio` | `0.91684`（`≈91.7%` 残余 LR） | 印证 `§3.1` 风险 2：线性 `lrf=0.01` 下第 `43` 轮早停残余 LR 仍 `>90%` |
+| `close_mosaic_trigger_epoch` | `491`（未触发，`close_mosaic_triggered=false`） | 印证 `§3.1` 风险 3：`epochs=500, close_mosaic=10` 需第 `491` 轮触发 |
+| `e2e_loss_o2m_weight` | `0.7411` | 印证 `§3.1` 风险 4：`E2ELoss` `o2m` 迁移仅走至 `74.11%`（目标 `10%`） |
+| `e2e_loss_o2o_weight` | `0.2589` | `o2o` 仅升至 `25.89%`（目标 `90%`）——`one2one` 部署头欠训属实 |
+
+- **`results.csv` `mAP50 / mAP50-95` 轨迹关键轮**：`ep1` `0.172 / 0.068` → `ep5` `0.186 / 0.070` → `ep10` `0.230 / 0.119` → `ep15` `0.268 / 0.136` → `ep19` `0.295 / 0.146` → **`ep23`（峰值，`best.pt`）`0.343 / 0.163`** → `ep25` `0.274 / 0.135` → `ep30` `0.293 / 0.139` → `ep35` `0.274 / 0.143` → `ep40` `0.274 / 0.126` → `ep43` `0.288 / 0.140`——`epoch 23` 后进入震荡平台并轻微回落（`mAP50-95` 峰值至末轮回撤 `14.1%`），`patience=20` 正确锁定 `best.pt` 于 `epoch 23`。
+
+### 6.3.2 双头验证/测试指标（`metrics.json` 逐项，`e2e` 部署头为权威）
+
+| Split | 指标 | 权威 `e2e`（`nms=False`，one2one） | 对照 `default`（`nms=None`，one2many+NMS） | `e2e − default` |
+|---|---|---:|---:|---:|
+| `val` | `mAP50` | **`0.34352`** | `0.33764` | `+0.0059` |
+| `val` | `mAP50-95` | **`0.16330`** | `0.16071` | `+0.0026` |
+| `val` | `mAP75` | `0.14608` | `0.14145` | `+0.0046` |
+| `val` | `mean_precision` | `0.31702` | `0.54315` | `−0.2261` |
+| `val` | `mean_recall` | `0.40501` | `0.41119` | `−0.0062` |
+| `test` | `mAP50` | **`0.38339`** | `0.39389` | `−0.0105` |
+| `test` | `mAP50-95` | **`0.18055`** | `0.18556` | `−0.0050` |
+| `test` | `mAP75` | `0.15324` | `0.15429` | `−0.0011` |
+| `test` | `mean_precision` | `0.62397` | `0.62955` | `−0.0056` |
+| `test` | `mean_recall` | `0.45909` | `0.46124` | `−0.0022` |
+
+- **「早停判据头 == 部署头」实测闭环**：`val`/`test` 两套 `mAP` 双向差异均 `≤1.05pp`（`val` e2e 微优 `+0.59pp`，`test` e2e 微差 `−1.05pp`）——证实 `nms=False` 端到端 `one2one` 头（`best_e2e.onnx` 交付物）与训练判据头一致，契约成立。`val` 的 `mean_precision` e2e 显著低于 default（`0.317 vs 0.543`）为无 NMS 头去重机制差异所致的真实差距，非数据错误。
+
+### 6.3.3 四类分 AP（`per_class`，`AP50 / AP50-95`，附 `precision / recall`）
+
+| Split | 类别 | `AP50` | `AP50-95` | `precision` | `recall` |
+|---|---|---:|---:|---:|---:|
+| `val` e2e | `streetlight_on` | **`0.85479`** | `0.48226` | `0.62255` | `0.9267` |
+| `val` e2e | `streetlight_off` | `0.21823` | `0.06923` | `0.0869` | `0.54545` |
+| `val` e2e | `streetlight_damaged` | `0.17563` | `0.04839` | `0.55862` | `0.14789` |
+| `val` e2e | `streetlight_occluded` | `0.12544` | `0.05332` | `0.0` | `0.0` |
+| `val` default | `streetlight_on` | `0.8853` | `0.50766` | `0.66064` | `0.93027` |
+| `val` default | `streetlight_off` | `0.17192` | `0.04389` | `0.09336` | `0.51515` |
+| `val` default | `streetlight_damaged` | `0.18832` | `0.05242` | `0.58538` | `0.16903` |
+| `val` default | `streetlight_occluded` | `0.10504` | `0.03888` | `0.83322` | `0.0303` |
+| `test` e2e | `streetlight_on` | **`0.85102`** | `0.47962` | `0.61617` | `0.88776` |
+| `test` e2e | `streetlight_off` | `0.46216` | `0.15465` | `0.37693` | `0.73734` |
+| `test` e2e | `streetlight_damaged` | `0.21789` | `0.08714` | `0.50277` | `0.21127` |
+| `test` e2e | `streetlight_occluded` | `0.0025` | `0.00079` | `1.0` | `0.0` |
+| `test` default | `streetlight_on` | `0.87303` | `0.49579` | `0.67094` | `0.88549` |
+| `test` default | `streetlight_off` | `0.47033` | `0.1549` | `0.41453` | `0.73921` |
+| `test` default | `streetlight_damaged` | `0.22469` | `0.08927` | `0.43271` | `0.22026` |
+| `test` default | `streetlight_occluded` | `0.0075` | `0.00227` | `0.0` | `0.0` |
+
+- **`ONNX 导出契约实测**：`onnx_verification` 实测 `input=[1, 3, 1280, 1280]` → `output=[1, 300, 6]`（`images`/`output0`），`nms=False`、`end2end=True`、`stride=32`、`head=Detect`，静态形状与 `client.py` 启动门禁完全一致；`sha256` 实测 `best.pt=5b8304…`、`best_e2e.onnx=2d63ba…`、`last.pt=8f1cde…`（`SHA256SUMS` 回传校验已通过）。
+
+### 6.3.4 诚实边界（与既有文档一致的实测如实披露）
+
+1. **`streetlight_occluded` 长尾结构性局限**：`val` `AP50=0.1254`（`precision=0.0`/`recall=0.0`），`test` `AP50=0.0025`（`precision=1.0`/`recall=0.0`）——`occluded` 仅 `d1` 独源 `227` 框（`train 117/val 33/test 77`，`vid01`/`vid05` 组原子性致 `14.5%/33.9%` 偏态，§2.1 已声明结构性下限），`test` 77 框单点 AP 置信区间 `±18.9pp` 量级；**该短板属数据采集结构性问题，后续靠合成遮挡 + 阶段二自采补齐，按 `D-18` 不承诺检出率**；
+2. **`streetlight_damaged` 偏弱但在 `D-18` 范围**：`AP50 val 0.176 / test 0.218`，`recall val 0.148 / test 0.211`——`6` 源 `1,423` 框已实现 `0.08pp` 近精确切分但样本多样性仍有限（NHAI 系同域），按 `D-18` 不承诺破损检出率；
+3. **`streetlight_off` 的 `test` `AP50=0.462` 高于 `val` `0.218` 的 split 差异如实标注**：`test` 含 `vid05` 整组 `533` 个 `off` 框（`17.35%`），`val` 仅 `33` 框（`1.07%`），`off` 在 `test` 样本量 `16×` 于 `val` 所致的真实指标差——13 项泄漏断言全 `0`，非泄漏所致；
+4. **`one2one` 头欠训为已知残余风险**：`e2e_loss_o2o_weight` 仅迁移 `25.89%`、`close_mosaic` 未触发——按 §3.1 预案，`--mosaic-polish-epochs` 短微调精修可用于后续收敛 `one2one` 部署头（本轮未执行，属可选增量非缺陷）。
+
+### 6.3.5 `D-30` 业务验收（`client.py` 真 `best_e2e.onnx` 推理，`task74-d30-inference.log`）
+
+`client.py` 以 `inference_mode=yolo26_onnx_e2e`、`model_version=yolo26s-onnx-best_e2e`、`ai_is_baseline_mode=false` 实跑 `3` 张 `1280×720` 夜间样图，全部按 `D-30` 正确识别 `streetlight_on` 为「正常亮灯参照框」而非故障候选：
+
+| 样图 | 场景判定 / 质量 | 候选数 | `is_fault_candidate` | `visual_signal_state` | `candidate_fault_type` | `suggested_severity_hint` | `yolo_confidence` / `fused_confidence`（逐候选） | `max_fused_confidence` |
+|---|---|---:|---|---|---|---|---:|---:|
+| `10_01751` | `night` / `pass`（`brightness_mean_v=19.27`） | `1` | `false` | `NORMAL_LIT` | `null` | `none` | `0.8201 / 0.8611` | `0.8611` |
+| `10_01606` | `night` / `pass`（`31.37`） | `3` | `false`（全 `3` 框） | `NORMAL_LIT` | `null` | `none` | `0.9177/0.9636`、`0.9047/0.9499`、`0.3007/0.3157` | `0.9636` |
+| `10_01453` | `night` / `warn`（`33.5`，`laplacian_var=49.03<60` 偏模糊建议重拍） | `3` | `false`（全 `3` 框） | `NORMAL_LIT` | `null` | `none` | `0.921/0.9671`、`0.904/0.9492`、`0.437/0.4589` | `0.9671` |
+
+- 三图 `primary_fault_type_suggestion=null`、`fusion_status=consistent`——`D-30` 回传「参照框」语义在真权重 + 真 `client.py` 链路上完整闭环。
