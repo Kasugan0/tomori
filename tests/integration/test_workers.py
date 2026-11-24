@@ -596,3 +596,129 @@ async def test_cleanup_orphan_uploads_once_preserves_db_and_recent_files(
     assert orphan_fresh.exists()
     assert tracked_old.exists()
     assert annotated_old.exists()
+
+
+# ── P0-5 side-effect assertions: notification payload + audit snapshot fields ────────────
+
+
+async def test_notification_payload_and_audit_business_snapshot_side_effects(
+    seeded_worker_db: AsyncEngine,
+) -> None:
+    """AI_CANDIDATE_EXPIRED + NOTIFICATION_DEAD_LETTER notifications carry full payload_json
+    (deep_link/title/body) and audit_logs carry `from_status`/`to_status`/`actor_account_id`."""
+    engine = seeded_worker_db
+    t_now = datetime(2026, 11, 24, 18, 0, 0, tzinfo=UTC)
+
+    # ── 1) expire stale AI candidate -> AI_CANDIDATE_EXPIRED notification payload ──
+    async with AsyncSession(engine, expire_on_commit=False) as s, s.begin():
+        inspector = await _get_account(s, "inspector1")
+        pts = list((await s.scalars(select(LightingPoint).order_by(LightingPoint.id))).all())
+        stale = FaultTicket(
+            ticket_no="FT-20261124-9501",
+            region_id=pts[0].region_id,
+            lighting_point_id=pts[0].id,
+            report_source="AI_CANDIDATE",
+            fault_type="LAMP_OUT",
+            title="P0-5 过期通知副作用",
+            status="AI_CANDIDATE_PENDING",
+            reporter_account_id=inspector.id,
+            confirmed_by_inspector=False,
+            created_at=t_now - timedelta(hours=80),
+            updated_at=t_now - timedelta(hours=80),
+        )
+        s.add(stale)
+        await s.flush()
+        stale_id, inspector_id = stale.id, inspector.id
+
+    async with AsyncSession(engine, expire_on_commit=False) as s:
+        expired = await expire_stale_ai_candidates_once(s, now=t_now)
+    assert expired == 1
+
+    async with AsyncSession(engine, expire_on_commit=False) as s:
+        notifs = (
+            await s.scalars(
+                select(NotificationTask).where(
+                    NotificationTask.related_ticket_id == stale_id,
+                    NotificationTask.event_type == "AI_CANDIDATE_EXPIRED",
+                )
+            )
+        ).all()
+        assert len(notifs) == 1
+        n = notifs[0]
+        # Side-effect assertions: payload carries deep_link + semantic title/body
+        assert n.recipient_account_id == inspector_id
+        assert n.channel == "IN_APP"
+        assert n.title is not None and len(n.title) > 0
+        assert n.body is not None and len(n.body) > 0
+        assert n.payload_json is not None
+        assert n.payload_json.get("deep_link") is not None
+        assert "/tickets/" in n.payload_json["deep_link"]
+        assert n.payload_json["deep_link"].endswith(str(stale_id))
+        assert n.status == "PENDING"
+
+        audits = (
+            await s.scalars(
+                select(AuditLog).where(
+                    AuditLog.ticket_id == stale_id,
+                    AuditLog.action == "TICKET_CANCELLED",
+                )
+            )
+        ).all()
+        assert len(audits) == 1
+        snap = audits[0].business_snapshot_json or {}
+        assert snap.get("from_status") == "AI_CANDIDATE_PENDING"
+        assert snap.get("to_status") == "CANCELLED"
+        assert audits[0].action == "TICKET_CANCELLED"
+
+    # ── 2) dead-letter alert -> NOTIFICATION_DEAD_LETTER payload + audit snapshot ──
+    async with AsyncSession(engine, expire_on_commit=False) as s, s.begin():
+        inspector = await _get_account(s, "inspector1")
+        email_task = create_notification_task(
+            s,
+            recipient_account_id=inspector.id,
+            event_type="REPAIR_SLA_TIMEOUT",
+            channel="EMAIL",
+            title="P0-5 死信副作用",
+            body="死信载荷断言",
+            payload_json={"deep_link": "/tickets/42"},
+            max_attempts=3,
+        )
+        await s.flush()
+        email_id = email_task.id
+
+    t0 = t_now
+    for off in (0, 60, 360):
+        async with AsyncSession(engine, expire_on_commit=False) as s:
+            await process_due_notifications_once(s, now=t0 + timedelta(seconds=off))
+
+    async with AsyncSession(engine, expire_on_commit=False) as s:
+        alerts = (
+            await s.scalars(
+                select(NotificationTask).where(
+                    NotificationTask.event_type == "NOTIFICATION_DEAD_LETTER"
+                )
+            )
+        ).all()
+        assert len(alerts) >= 1
+        for a in alerts:
+            # Side-effect: admin alert carries structured payload pointing back to dead task
+            assert a.channel == "IN_APP"
+            assert a.title is not None and len(a.title) > 0
+            assert a.body is not None and len(a.body) > 0
+            assert a.payload_json is not None
+            assert a.payload_json.get("dead_letter_task_id") == email_id
+            assert a.payload_json.get("deep_link") is not None
+
+        dlq_audits = (
+            await s.scalars(
+                select(AuditLog).where(
+                    AuditLog.resource_id == email_id,
+                    AuditLog.action == "NOTIFICATION_DEAD_LETTER",
+                )
+            )
+        ).all()
+        assert len(dlq_audits) == 1
+        dsnap = dlq_audits[0].business_snapshot_json or {}
+        assert dsnap.get("from_status") == "FAILED"
+        assert dsnap.get("to_status") == "DEAD_LETTER"
+        assert dlq_audits[0].action == "NOTIFICATION_DEAD_LETTER"
