@@ -1,16 +1,19 @@
 """通知队列异步投递、退避重试与 PROCESSING 卡死自愈 worker（状态机 D）。
 
-严格遵循 `docs/DESIGN.md` §2.4 与 `docs/API.md` §2.5：
-- `D2`: `PENDING` 或 `FAILED (attempt_count < max_attempts)` 且到期任务经
-  `FOR UPDATE SKIP LOCKED` 抢占后转为 `PROCESSING`。
-- `D3`: `IN_APP`（V1 默认通道）立即成功并置 `SENT` + `sent_at`。
+严格遵循 `docs/DESIGN.md` §2.4 / §3.1 与 `docs/API.md` §2.5：
+- 全部状态变更统一收敛经由 `tomori.services.state_machine.transition_notification` 执行，
+  绝不在 worker 内直写 `task.status`。
+- `FAILED` 重试抢占严格遵循 `FAILED → PENDING`（`D5`）→ `PENDING → PROCESSING`（`D2`）两步合法边；
+- `D3`: `IN_APP`（V1 默认通道）立即成功并经 `transition_notification(..., "SENT")` 置为 `SENT`。
 - `D4`: 投递失败递增 `attempt_count`、记录 `last_error`，若 `attempt_count < max_attempts`
-  置 `FAILED` 并按 `(60, 300, 900)` 秒（1m / 5m / 15m）计算 `next_retry_at`。
-- `D5`/`D6`: 若 `attempt_count >= max_attempts` 置 `DEAD_LETTER` 并向全部活跃 `ADMIN`
+  经 `transition_notification(..., "FAILED")` 置 `FAILED` 并按 `(60, 300, 900)` 秒退避。
+- `D4 → D6`: 若 `attempt_count >= max_attempts`，依次经 `FAILED`（`D4`）→ `DEAD_LETTER`（`D6`），
+  写 `NOTIFICATION_DEAD_LETTER` 审计行，并经 `create_notification_task` 向全部活跃 `ADMIN`
   生成 `NOTIFICATION_DEAD_LETTER` 告警通知。
 - `PROCESSING` 10 分钟卡死自愈：扫描 `updated_at < now - 10min` 的任务，若
-  `attempt_count + 1 < max_attempts` 则退回 `PENDING`；否则直入 `DEAD_LETTER`
-  （`last_error="worker_processing_timeout_10m"`）并通知全部活跃 `ADMIN`，杜绝死路。
+  `attempt_count + 1 < max_attempts` 则经 `transition_notification(..., "PENDING")` 退回；
+  否则经 `transition_notification(..., "DEAD_LETTER")`（`worker_processing_timeout_10m`）
+  并向全部活跃 `ADMIN` 发出 `NOTIFICATION_DEAD_LETTER` 告警。
 """
 
 from __future__ import annotations
@@ -30,6 +33,10 @@ from tomori.models.account import Account
 from tomori.models.account_role import AccountRole
 from tomori.models.notification_task import NotificationTask
 from tomori.models.role import Role
+from tomori.services.state_machine import (
+    create_notification_task,
+    transition_notification,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +46,7 @@ WORKER_PROCESSING_TIMEOUT_ERROR: Final[str] = "worker_processing_timeout_10m"
 DEFAULT_NOTIFIER_INTERVAL_SECONDS: Final[float] = 5.0
 DEFAULT_NOTIFIER_BATCH_SIZE: Final[int] = 50
 MAX_LAST_ERROR_LENGTH: Final[int] = 512
+_NOTIFIER_AUDIT_META: Final[dict[str, str]] = {"path": "/internal/workers/notifier"}
 
 DeliveryResult = bool | None
 ChannelDispatcher = Callable[[NotificationTask], Awaitable[DeliveryResult] | DeliveryResult]
@@ -101,41 +109,6 @@ async def _get_active_admin_ids(session: AsyncSession) -> list[int]:
     return list((await session.scalars(stmt)).all())
 
 
-def _build_dead_letter_alert(task: NotificationTask, *, admin_id: int) -> NotificationTask:
-    title = f"通知投递进入死信队列 (#{task.id})"[:128]
-    body = (
-        f"通知任务 #{task.id}（事件 {task.event_type}，通道 {task.channel}）"
-        f"已达最大重试次数（{task.attempt_count}/{task.max_attempts}），"
-        f"最后错误：{task.last_error or 'unknown'}。"
-    )
-    return NotificationTask(
-        recipient_account_id=admin_id,
-        event_type="NOTIFICATION_DEAD_LETTER",
-        channel="IN_APP",
-        title=title,
-        body=body,
-        payload_json={
-            "dead_letter_task_id": task.id,
-            "original_event_type": task.event_type,
-            "original_channel": task.channel,
-            "original_recipient_account_id": task.recipient_account_id,
-            "attempt_count": task.attempt_count,
-            "max_attempts": task.max_attempts,
-            "last_error": task.last_error,
-            "deep_link": "/notifications/dead-letters",
-        },
-        related_ticket_id=task.related_ticket_id,
-        related_dispatch_id=task.related_dispatch_id,
-        status="PENDING",
-        attempt_count=0,
-        max_attempts=3,
-        next_retry_at=None,
-        sent_at=None,
-        is_read=False,
-        read_at=None,
-    )
-
-
 async def _fan_out_dead_letter_alerts(
     session: AsyncSession,
     dead_tasks: Sequence[NotificationTask],
@@ -154,8 +127,34 @@ async def _fan_out_dead_letter_alerts(
 
     created = 0
     for task in eligible:
+        title = f"通知投递进入死信队列 (#{task.id})"[:128]
+        body = (
+            f"通知任务 #{task.id}（事件 {task.event_type}，通道 {task.channel}）"
+            f"已达最大重试次数（{task.attempt_count}/{task.max_attempts}），"
+            f"最后错误：{task.last_error or 'unknown'}。"
+        )
+        payload = {
+            "dead_letter_task_id": task.id,
+            "original_event_type": task.event_type,
+            "original_channel": task.channel,
+            "original_recipient_account_id": task.recipient_account_id,
+            "attempt_count": task.attempt_count,
+            "max_attempts": task.max_attempts,
+            "last_error": task.last_error,
+            "deep_link": "/notifications/dead-letters",
+        }
         for admin_id in admin_ids:
-            session.add(_build_dead_letter_alert(task, admin_id=admin_id))
+            create_notification_task(
+                session,
+                recipient_account_id=admin_id,
+                event_type="NOTIFICATION_DEAD_LETTER",
+                channel="IN_APP",
+                title=title,
+                body=body,
+                payload_json=payload,
+                related_ticket_id=task.related_ticket_id,
+                related_dispatch_id=task.related_dispatch_id,
+            )
             created += 1
     return created
 
@@ -168,11 +167,10 @@ async def recover_stuck_processing_tasks(
 ) -> int:
     """回收卡在 `PROCESSING` 超过 10 分钟的通知任务（`DESIGN.md` §2.4）。
 
-    - 若 `attempt_count + 1 < max_attempts`：置回 `PENDING`，递增 `attempt_count`，
-      置 `next_retry_at = now` 立即可重试。
-    - 若 `attempt_count + 1 >= max_attempts`：直接转入 `DEAD_LETTER`，
-      置 `last_error="worker_processing_timeout_10m"`，并向全部活跃 `ADMIN` 发出
-      `NOTIFICATION_DEAD_LETTER` 告警，确保不存在卡死状态。
+    - 若 `attempt_count + 1 < max_attempts`：经 `transition_notification(..., "PENDING")` 退回，
+      递增 `attempt_count`，置 `next_retry_at = now` 立即可重试（`write_audit=False`）。
+    - 若 `attempt_count + 1 >= max_attempts`：经 `transition_notification(..., "DEAD_LETTER")`，
+      置 `last_error="worker_processing_timeout_10m"`，记死信审计并向活跃 `ADMIN` 告警。
     """
     if timeout_minutes < 1:
         raise ValueError("timeout_minutes must be >= 1")
@@ -197,19 +195,31 @@ async def recover_stuck_processing_tasks(
         dead_lettered: list[NotificationTask] = []
         for task in stuck_tasks:
             next_attempt = task.attempt_count + 1
-            task.sent_at = None
-            task.updated_at = current_time
             if next_attempt < task.max_attempts:
-                task.status = "PENDING"
-                task.attempt_count = next_attempt
-                task.next_retry_at = current_time
-                task.last_error = WORKER_PROCESSING_TIMEOUT_ERROR
+                await transition_notification(
+                    session,
+                    task,
+                    "PENDING",
+                    attempt_count=next_attempt,
+                    last_error=WORKER_PROCESSING_TIMEOUT_ERROR,
+                    next_retry_at=current_time,
+                    now=current_time,
+                    write_audit=False,
+                )
             else:
-                task.status = "DEAD_LETTER"
-                task.attempt_count = min(next_attempt, task.max_attempts)
-                task.next_retry_at = None
-                task.last_error = WORKER_PROCESSING_TIMEOUT_ERROR
+                await transition_notification(
+                    session,
+                    task,
+                    "DEAD_LETTER",
+                    attempt_count=min(next_attempt, task.max_attempts),
+                    last_error=WORKER_PROCESSING_TIMEOUT_ERROR,
+                    action="NOTIFICATION_DEAD_LETTER",
+                    now=current_time,
+                    audit_meta=_NOTIFIER_AUDIT_META,
+                    write_audit=True,
+                )
                 dead_lettered.append(task)
+            task.updated_at = current_time
 
         if dead_lettered:
             await _fan_out_dead_letter_alerts(session, dead_lettered)
@@ -267,9 +277,23 @@ async def process_due_notifications_once(
                 "dead_letter_alerts_created": 0,
             }
 
-        # D2: 先将抢占行原子置为 PROCESSING
+        # 严格遵循状态机 D 合法边：FAILED 须先经 D5 (FAILED → PENDING)，再走 D2 (→ PROCESSING)
         for task in tasks:
-            task.status = "PROCESSING"
+            if task.status == "FAILED":
+                await transition_notification(
+                    session,
+                    task,
+                    "PENDING",
+                    now=current_time,
+                    write_audit=False,
+                )
+            await transition_notification(
+                session,
+                task,
+                "PROCESSING",
+                now=current_time,
+                write_audit=False,
+            )
             task.updated_at = current_time
         await session.flush()
 
@@ -288,23 +312,52 @@ async def process_due_notifications_once(
                 raise
             except Exception as exc:
                 next_attempt = min(task.attempt_count + 1, task.max_attempts)
-                task.attempt_count = next_attempt
-                task.last_error = _truncate_error(str(exc) or type(exc).__name__)
-                task.sent_at = None
-                task.updated_at = current_time
+                err_msg = _truncate_error(str(exc) or type(exc).__name__)
                 if next_attempt < task.max_attempts:
                     backoff_seconds = compute_backoff_seconds(next_attempt)
-                    task.status = "FAILED"
-                    task.next_retry_at = current_time + timedelta(seconds=backoff_seconds)
+                    await transition_notification(
+                        session,
+                        task,
+                        "FAILED",
+                        attempt_count=next_attempt,
+                        last_error=err_msg,
+                        next_retry_at=current_time + timedelta(seconds=backoff_seconds),
+                        now=current_time,
+                        write_audit=False,
+                    )
                     failed_count += 1
                 else:
-                    task.status = "DEAD_LETTER"
-                    task.next_retry_at = None
+                    # D4 (PROCESSING → FAILED) -> D6 (FAILED → DEAD_LETTER)
+                    await transition_notification(
+                        session,
+                        task,
+                        "FAILED",
+                        attempt_count=next_attempt,
+                        last_error=err_msg,
+                        next_retry_at=None,
+                        now=current_time,
+                        write_audit=False,
+                    )
+                    await transition_notification(
+                        session,
+                        task,
+                        "DEAD_LETTER",
+                        last_error=err_msg,
+                        action="NOTIFICATION_DEAD_LETTER",
+                        now=current_time,
+                        audit_meta=_NOTIFIER_AUDIT_META,
+                        write_audit=True,
+                    )
                     dead_lettered_tasks.append(task)
+                task.updated_at = current_time
             else:
-                task.status = "SENT"
-                task.sent_at = current_time
-                task.next_retry_at = None
+                await transition_notification(
+                    session,
+                    task,
+                    "SENT",
+                    now=current_time,
+                    write_audit=False,
+                )
                 task.updated_at = current_time
                 sent_count += 1
 
@@ -341,8 +394,6 @@ async def notifier_loop(
         try:
             async with factory() as session, session.begin():
                 recovered = await recover_stuck_processing_tasks(session)
-
-            async with factory() as session, session.begin():
                 summary = await process_due_notifications_once(
                     session,
                     batch_size=batch_size,

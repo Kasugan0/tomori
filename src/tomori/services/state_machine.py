@@ -1160,6 +1160,7 @@ async def transition_notification(
     *,
     actor_account_id: int | None = None,
     action: str | None = None,
+    attempt_count: int | None = None,
     last_error: str | None = None,
     next_retry_at: datetime | None = None,
     now: datetime | None = None,
@@ -1168,7 +1169,7 @@ async def transition_notification(
     persist_audit: bool = True,
     write_audit: bool | None = None,
 ) -> AuditLog:
-    """状态机 D 唯一合法转移函数（用于 API retry / acknowledge 及内部显式转移）。"""
+    """状态机 D 唯一合法转移函数（用于 API retry / acknowledge 及 notifier worker）。"""
     from_status = task.status
     _assert_transition(
         entity="notification_tasks",
@@ -1177,6 +1178,19 @@ async def transition_notification(
         transitions=NOTIFICATION_TRANSITIONS,
         allowed_from_map=_NOTIFICATION_ALLOWED_FROM,
     )
+
+    if attempt_count is not None:
+        if attempt_count < 0 or attempt_count > task.max_attempts:
+            raise AppError(
+                VALIDATION_ERROR,
+                f"通知重试次数 attempt_count={attempt_count} 超出合法区间 [0, {task.max_attempts}]",
+                {
+                    "field": "attempt_count",
+                    "attempt_count": attempt_count,
+                    "max_attempts": task.max_attempts,
+                },
+            )
+        task.attempt_count = attempt_count
 
     ts = _ensure_utc(now)
     if from_status == "DEAD_LETTER" and to_status == "PENDING":  # D7 retry
@@ -1189,6 +1203,21 @@ async def transition_notification(
         task.next_retry_at = None
         task.acknowledged_by_account_id = actor_account_id
         task.acknowledged_at = ts
+    elif from_status == "PROCESSING" and to_status == "PENDING":  # 10 分钟卡死自愈回退
+        task.sent_at = None
+        if last_error is not None:
+            task.last_error = last_error[:512]
+        task.next_retry_at = (
+            _ensure_utc(next_retry_at)
+            if (next_retry_at is not None and task.attempt_count < task.max_attempts)
+            else (None if task.attempt_count >= task.max_attempts else ts)
+        )
+    elif from_status == "FAILED" and to_status == "PENDING":  # D5 退避到期准备重投
+        task.sent_at = None
+        if next_retry_at is not None and task.attempt_count < task.max_attempts:
+            task.next_retry_at = _ensure_utc(next_retry_at)
+        else:
+            task.next_retry_at = None
     elif to_status == "SENT":  # D3
         task.sent_at = ts
         task.next_retry_at = None
@@ -1204,7 +1233,7 @@ async def transition_notification(
             )
         else:
             task.next_retry_at = None
-    elif to_status == "DEAD_LETTER":  # D6
+    elif to_status == "DEAD_LETTER":  # D6 / 卡死耗尽直入死信
         task.sent_at = None
         task.next_retry_at = None
         resolved_dead_err = last_error or task.last_error or "max_attempts_exceeded"
@@ -1230,7 +1259,11 @@ async def transition_notification(
         ticket_id=task.related_ticket_id,
         actor_account_id=actor_account_id,
         request_id=request_id,
-        snapshot={"from_status": from_status, "to_status": to_status},
+        snapshot={
+            "from_status": from_status,
+            "to_status": to_status,
+            "attempt_count": task.attempt_count,
+        },
         audit_meta=audit_meta,
     )
     should_persist = persist_audit if write_audit is None else write_audit
