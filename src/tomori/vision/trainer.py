@@ -1,15 +1,15 @@
-"""YOLO26s 远端 GPU 训练、双头离线评估与端到端 ONNX 导出流水线。
+"""YOLO26s 远端 GPU 训练、双头离线评估与端到端 ONNX 导出流水线.
 
 硬约束（对齐 `docs/DESIGN.md` §5.3、`docs/RUNBOOK.md` §6.4–§6.5 与 `D-06` / `D-28`）：
 1. **唯一锁定底模**：`yolo26s.pt`（严禁 `n`/`m`/`l`/`x`）；
 2. **唯一锁定分辨率**：`imgsz=1280`（`2×640`，对 D1 `81.86%` 的 `1280×720` 原图实现 `1.0×`
    零下采样，保留 `100%` vs `64%` 像素并将 `<16px` 小目标比例从 `14.72%` 降至 `5.81%`）；
 3. **训练周期与早停**：默认 `epochs=500`、`patience=20`（`EarlyStopping` 监控纯 `mAP50-95`）；
-   注意若在远早于 `500` 轮处早停，线性 `lrf=0.01` 仍留 `70%–92%` LR、`close_mosaic=10`（需第 491
-   轮触发）与 `E2ELoss` 渐进转移不会走满，可在 `--mosaic-polish-epochs` 显式追加无 Mosaic 短微调。
+   若远早于 `500` 轮处早停，线性 `lrf=0.01` 仍留 `70%–92%` LR、`close_mosaic=10`（需第 491 轮
+   触发）与 `E2ELoss` 渐进转移不会走满，可用 `--mosaic-polish-epochs` 追加无 Mosaic 短微调。
 4. **增强禁区**：`flipud=0.0`、`hsv_v <= 0.25`、`hsv_s <= 0.4`（防昼夜洗白引入标签噪声）；
-5. **AutoBatch 显存探测**：`batch=-1` 时通过 `ultralytics.utils.autobatch.check_train_batch_size`
-   按约 60% 显存上限探测，并向下取 2 的幂锁死传给 `model.train`；
+5. **固定批大小**：`batch` 必填整数 `>= 1`（`RTX 4080 SUPER @ 1280` 实测 `batch=8` 峰值约
+   `12 GiB`）；不再调用 `AutoBatch` 探测、不再向下取 2 的幂——显式给死、可复现；
 6. **ONNX 导出与形状门禁**：`export(format="onnx", imgsz=1280, nms=False, dynamic=False,
    simplify=True)` 使用 Ultralytics 默认 opset（不写 `opset=17`），复制为 `best_e2e.onnx`，
    经 `onnxruntime.InferenceSession` 校验 `[1, 3, 1280, 1280] -> [1, 300, 6]` 后输出
@@ -30,44 +30,66 @@ from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from tomori.vision import config
+
+# ---------------------------------------------------------------------------
+# 单一事实源：D-06 / D-28 冻结超参与默认运行参数（CLI `default=` 与 `TrainConfig`
+# 字段默认值均由此派生，一眼可读，不再散在 `add_argument` 里）。`model` / `project`
+# 为机器特定绝对路径 → CLI `required=True`（不入 `_DEFAULTS`）。
+# ---------------------------------------------------------------------------
+_DEFAULTS: Final[dict[str, Any]] = {
+    "run_name": "streetlight_v1",
+    "imgsz": config.EXPECTED_YOLO_IMG_SIZE,  # 1280 (D-28)
+    "epochs": 500,
+    "patience": 20,
+    "batch": 8,  # RTX 4080 SUPER @ 1280 实测峰值 ~12GiB（固定，不再 AutoBatch）
+    "optimizer": "auto",
+    "lr0": 0.01,
+    "lrf": 0.01,
+    "close_mosaic": 10,
+    "workers": 8,
+    "flipud": 0.0,  # D-06 增强禁区（硬拦截 >0）
+    "hsv_v": 0.25,  # D-06 增强禁区（硬拦截 >0.25）
+    "hsv_s": 0.4,  # D-06 增强禁区（硬拦截 >0.4）
+    "degrees": 5.0,
+    "seed": 42,
+}
 
 
 @dataclass(frozen=True)
 class TrainConfig:
-    """远端 `yolo26s.pt @ 1280` 训练与导出配置（构造函数强制守卫项目红线）。"""
+    """远端 `yolo26s.pt @ 1280` 训练与导出配置（构造函数强制守卫项目红线）."""
 
     data_yaml: Path
-    base_model: Path = Path("/root/autodl-tmp/tomori/weights/yolo26s.pt")
-    project_dir: Path = Path("/root/autodl-tmp/tomori/runs")
-    run_name: str = "streetlight_v1"
+    base_model: Path = Path("yolo26s.pt")  # CLI `--model` 必填；默认仅相对名供直接构造（D-06 兜底）
+    project_dir: Path = Path("runs")  # CLI `--project` 必填；默认仅相对目录名供直接构造
+    run_name: str = _DEFAULTS["run_name"]
     model_version: str = "yolo26s-streetlight-v1.0"
-    imgsz: int = config.EXPECTED_YOLO_IMG_SIZE
-    epochs: int = 500
-    patience: int = 20
-    batch: int = -1  # -1 = 官方 AutoBatch（约 60% 显存上限）探测并向下取 2 的幂锁死
-    fallback_batch: int = 16
+    imgsz: int = _DEFAULTS["imgsz"]
+    epochs: int = _DEFAULTS["epochs"]
+    patience: int = _DEFAULTS["patience"]
+    batch: int = _DEFAULTS["batch"]  # 固定整数 >= 1，无探测、无向下取幂
     device: str = "0"
     amp: bool = True
-    optimizer: str = "auto"
-    lr0: float = 0.01
-    lrf: float = 0.01
+    optimizer: str = _DEFAULTS["optimizer"]
+    lr0: float = _DEFAULTS["lr0"]
+    lrf: float = _DEFAULTS["lrf"]
     cos_lr: bool = False
-    close_mosaic: int = 10
+    close_mosaic: int = _DEFAULTS["close_mosaic"]
     mosaic_polish_epochs: int = 0
     mosaic: float = 0.8
     mixup: float = 0.05
     copy_paste: float = 0.15
-    flipud: float = 0.0
+    flipud: float = _DEFAULTS["flipud"]
     fliplr: float = 0.5
-    degrees: float = 5.0
-    hsv_v: float = 0.25
-    hsv_s: float = 0.4
-    seed: int = 42
+    degrees: float = _DEFAULTS["degrees"]
+    hsv_v: float = _DEFAULTS["hsv_v"]
+    hsv_s: float = _DEFAULTS["hsv_s"]
+    seed: int = _DEFAULTS["seed"]
     deterministic: bool = True
-    workers: int = 8
+    workers: int = _DEFAULTS["workers"]
     exist_ok: bool = True
     dry_run: bool = False
     export_only: bool = False
@@ -90,10 +112,8 @@ class TrainConfig:
             raise ValueError(f"增强禁区：hsv_v 必须 <= 0.25（防昼夜洗白），收到 {self.hsv_v}")
         if not (0.0 <= self.hsv_s <= 0.4):
             raise ValueError(f"增强禁区：hsv_s 必须 <= 0.4（防昼夜洗白），收到 {self.hsv_s}")
-        if self.batch != -1 and self.batch < 1:
-            raise ValueError(f"batch 必须为 -1（AutoBatch）或 >= 1，收到 {self.batch}")
-        if self.fallback_batch < 1:
-            raise ValueError(f"fallback_batch 必须 >= 1，收到 {self.fallback_batch}")
+        if self.batch < 1:
+            raise ValueError(f"batch 必须 >= 1，收到 {self.batch}")
         if self.epochs < 1:
             raise ValueError(f"epochs 必须 >= 1，收到 {self.epochs}")
         if self.patience < 0:
@@ -106,24 +126,17 @@ class TrainConfig:
 
 @dataclass(frozen=True)
 class TrainArtifacts:
-    """训练、评估、ONNX 导出与完整性文件产物路径。"""
+    """训练、评估、ONNX 导出与完整性文件产物路径."""
 
     run_dir: Path
     best_pt: Path
     best_e2e_onnx: Path
     metrics_json: Path
     sha256sums: Path
-    resolved_batch: int
-    probed_batch: int | None
+    batch: int
     val_map50: float | None
     val_map50_95: float | None
     dry_run: bool = False
-
-
-def floor_power_of_two(value: int, *, min_batch: int = 1, max_batch: int = 64) -> int:
-    """将 AutoBatch 探测值向下取 2 的幂并限制在安全范围，保证显存余量与可复现性。"""
-    clamped = max(min_batch, min(max_batch, int(value)))
-    return 1 << (clamped.bit_length() - 1)
 
 
 def _sha256_file(path: Path) -> str:
@@ -145,7 +158,7 @@ def _load_yaml_dict(path: Path) -> dict[str, Any]:
 
 
 def validate_data_yaml(data_yaml: Path) -> tuple[dict[str, Any], int]:
-    """核验 `data.yaml` 类别数量与顺序严格对齐 `config.RAW_CLASSES`，并统计训练集图像数。"""
+    """核验 `data.yaml` 类别数量与顺序严格对齐 `config.RAW_CLASSES`，并统计训练集图像数."""
     parsed = _load_yaml_dict(data_yaml)
     names_raw = parsed.get("names")
     expected = list(config.RAW_CLASSES)
@@ -180,48 +193,8 @@ def validate_data_yaml(data_yaml: Path) -> tuple[dict[str, Any], int]:
     return parsed, train_count
 
 
-def _resolve_batch_size(cfg: TrainConfig, dataset_size: int) -> tuple[int | None, int]:
-    """`batch=-1` 时调官方 `check_train_batch_size`（60% 显存）探测并向下取 2 的幂锁死。"""
-    if cfg.batch > 0:
-        return None, cfg.batch
-
-    os.environ["YOLO_AUTOINSTALL"] = "False"
-    torch: Any = __import__("torch")
-    ultralytics_mod: Any = __import__("ultralytics")
-    autobatch_mod: Any = __import__(
-        "ultralytics.utils.autobatch",
-        fromlist=["check_train_batch_size"],
-    )
-
-    if cfg.device.strip().lower() == "cpu" or not torch.cuda.is_available():
-        return None, cfg.fallback_batch
-
-    device_idx = cfg.device.split(",")[0].strip()
-    torch_device = torch.device(f"cuda:{device_idx}" if device_idx.isdigit() else device_idx)
-    torch.backends.cudnn.benchmark = False
-
-    yolo_probe = ultralytics_mod.YOLO(str(cfg.base_model))
-    try:
-        yolo_probe.model.to(torch_device)
-        probed = int(
-            autobatch_mod.check_train_batch_size(
-                yolo_probe.model,
-                imgsz=cfg.imgsz,
-                amp=cfg.amp,
-                batch=-1,
-                dataset_size=max(0, dataset_size),
-            )
-        )
-        locked = floor_power_of_two(probed, min_batch=1, max_batch=64)
-        return probed, locked
-    finally:
-        del yolo_probe
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-
 def extract_det_metrics(det_metrics: Any, class_names: Sequence[str]) -> dict[str, Any]:
-    """按 `ultralytics==8.4.216` `DetMetrics` / `Metric` 精确字段抽取总体与逐类指标。"""
+    """按 `ultralytics==8.4.216` `DetMetrics` / `Metric` 精确字段抽取总体与逐类指标."""
     if det_metrics is None:
         return {}
     box = getattr(det_metrics, "box", None)
@@ -281,7 +254,7 @@ def extract_det_metrics(det_metrics: Any, class_names: Sequence[str]) -> dict[st
 
 
 def _verify_exported_onnx(onnx_path: Path, expected_imgsz: int) -> dict[str, Any]:
-    """用 `onnxruntime.InferenceSession` 核对 `[1, 3, imgsz, imgsz] -> [1, 300, 6]` 与元数据。"""
+    """用 `onnxruntime.InferenceSession` 核对 `[1, 3, imgsz, imgsz] -> [1, 300, 6]` 与元数据."""
     from tomori.vision.client import validate_onnx_session
 
     ort: Any = __import__("onnxruntime")
@@ -320,7 +293,7 @@ def _schedule_diagnostics(
     cos_lr: bool,
     close_mosaic: int,
 ) -> dict[str, Any]:
-    """依据 `ultralytics==8.4.216` 源码公式计算早停时的 LR/Mosaic/E2ELoss 真实状态。"""
+    """依据 `ultralytics==8.4.216` 源码公式计算早停时的 LR/Mosaic/E2ELoss 真实状态."""
     if stopped_epoch_1based is None:
         return {}
     x = max(0, stopped_epoch_1based - 1)
@@ -342,23 +315,57 @@ def _schedule_diagnostics(
     }
 
 
+def _train_kwargs(cfg: TrainConfig, batch: int) -> dict[str, Any]:
+    """抽出两次 `model.train()` 共用的关键字字典（单事实源，避免主训与精修块重复 30 行）."""
+    return {
+        "data": str(cfg.data_yaml.resolve()),
+        "project": str(cfg.project_dir.resolve()),
+        "imgsz": cfg.imgsz,
+        "batch": batch,
+        "device": cfg.device,
+        "amp": cfg.amp,
+        "optimizer": cfg.optimizer,
+        "cos_lr": cfg.cos_lr,
+        "close_mosaic": cfg.close_mosaic,
+        "mosaic": cfg.mosaic,
+        "mixup": cfg.mixup,
+        "copy_paste": cfg.copy_paste,
+        "flipud": cfg.flipud,
+        "fliplr": cfg.fliplr,
+        "degrees": cfg.degrees,
+        "hsv_v": cfg.hsv_v,
+        "hsv_s": cfg.hsv_s,
+        "seed": cfg.seed,
+        "deterministic": cfg.deterministic,
+        "workers": cfg.workers,
+        "exist_ok": cfg.exist_ok,
+        # 早停判据头 == 部署头：`DetectionTrainer.get_validator()` 以 `copy(self.args)` 构造
+        # validator，而 `BaseValidator.__call__` 内 `model.end2end = self.args.nms is False`
+        # （`engine/validator.py:23`）决定 `self.validate()` 走 `one2one` 还是 `one2many`。
+        # 故必须在 train 传 `nms=False`，否则 EarlyStopping 监控的是 `one2many`+外接 NMS，
+        # 与 `export(..., nms=False)` 交付的 `one2one` 端到端头错位。
+        "nms": False,
+        "plots": True,
+        "val": True,
+    }
+
+
 def run_training_pipeline(cfg: TrainConfig) -> TrainArtifacts:
     """执行（或 `--dry-run` 预演）YOLO26s@1280 训练、val/test 评估、ONNX 导出与清单落盘."""
     os.environ["YOLO_AUTOINSTALL"] = "False"
-    data_dict, train_count = validate_data_yaml(cfg.data_yaml)
+    data_dict, _train_count = validate_data_yaml(cfg.data_yaml)
+    batch = cfg.batch  # 固定整数 batch（>= 1，经 __post_init__ 校验），不做任何探测/取幂
 
     if cfg.dry_run:
         run_dir = cfg.project_dir / cfg.run_name
         weights_dir = run_dir / "weights"
-        resolved_batch = cfg.batch if cfg.batch > 0 else cfg.fallback_batch
         return TrainArtifacts(
             run_dir=run_dir,
             best_pt=weights_dir / "best.pt",
             best_e2e_onnx=weights_dir / "best_e2e.onnx",
             metrics_json=run_dir / "metrics.json",
             sha256sums=run_dir / "SHA256SUMS",
-            resolved_batch=resolved_batch,
-            probed_batch=None,
+            batch=batch,
             val_map50=None,
             val_map50_95=None,
             dry_run=True,
@@ -367,8 +374,8 @@ def run_training_pipeline(cfg: TrainConfig) -> TrainArtifacts:
     ultralytics_mod: Any = __import__("ultralytics")
     yolo_cls = ultralytics_mod.YOLO
 
-    probed_batch: int | None = None
     if cfg.export_only:
+        # 仅复跑「导出 + 校验 + 清单」：--weights 指向已训练 best.pt，不重训。
         if cfg.weights_override is None or not cfg.weights_override.is_file():
             raise FileNotFoundError(
                 f"--export-only 需要有效的 --weights 文件: {cfg.weights_override}"
@@ -377,47 +384,17 @@ def run_training_pipeline(cfg: TrainConfig) -> TrainArtifacts:
         run_dir = best_pt.parent.parent if best_pt.parent.name == "weights" else best_pt.parent
         weights_dir = best_pt.parent
         last_pt = weights_dir / "last.pt"
-        resolved_batch = cfg.batch if cfg.batch > 0 else cfg.fallback_batch
     else:
         if not cfg.base_model.is_file():
             raise FileNotFoundError(f"底模文件不存在: {cfg.base_model}")
-        probed_batch, resolved_batch = _resolve_batch_size(cfg, train_count)
         model = yolo_cls(str(cfg.base_model))
         model.train(
-            data=str(cfg.data_yaml.resolve()),
-            project=str(cfg.project_dir.resolve()),
             name=cfg.run_name,
             epochs=cfg.epochs,
             patience=cfg.patience,
-            imgsz=cfg.imgsz,
-            batch=resolved_batch,
-            device=cfg.device,
-            amp=cfg.amp,
-            optimizer=cfg.optimizer,
             lr0=cfg.lr0,
             lrf=cfg.lrf,
-            cos_lr=cfg.cos_lr,
-            close_mosaic=cfg.close_mosaic,
-            mosaic=cfg.mosaic,
-            mixup=cfg.mixup,
-            copy_paste=cfg.copy_paste,
-            flipud=cfg.flipud,
-            fliplr=cfg.fliplr,
-            degrees=cfg.degrees,
-            hsv_v=cfg.hsv_v,
-            hsv_s=cfg.hsv_s,
-            seed=cfg.seed,
-            deterministic=cfg.deterministic,
-            workers=cfg.workers,
-            exist_ok=cfg.exist_ok,
-            # 早停判据头 == 部署头：`DetectionTrainer.get_validator()` 以 `copy(self.args)` 构造
-            # validator，而 `BaseValidator.__call__` 内 `model.end2end = self.args.nms is False`
-            # （`engine/validator.py:23`）决定 `self.validate()` 走 `one2one` 还是 `one2many`。
-            # 故必须在 train 传 `nms=False`，否则 EarlyStopping 监控的是 `one2many`+外接 NMS，
-            # 与 `export(..., nms=False)` 交付的 `one2one` 端到端头错位。
-            nms=False,
-            plots=True,
-            val=True,
+            **_train_kwargs(cfg, batch),
         )
         trainer_obj = getattr(model, "trainer", None)
         run_dir = (
@@ -449,34 +426,16 @@ def run_training_pipeline(cfg: TrainConfig) -> TrainArtifacts:
         ):
             polish_model = yolo_cls(str(best_pt))
             polish_model.train(
-                data=str(cfg.data_yaml.resolve()),
-                project=str(cfg.project_dir.resolve()),
                 name=f"{cfg.run_name}_polish",
                 epochs=cfg.mosaic_polish_epochs,
                 patience=0,
-                imgsz=cfg.imgsz,
-                batch=resolved_batch,
-                device=cfg.device,
-                amp=cfg.amp,
-                optimizer=cfg.optimizer,
                 lr0=cfg.lr0 * 0.2,
                 lrf=0.05,
                 cos_lr=True,
                 mosaic=0.0,
                 mixup=0.0,
                 copy_paste=0.0,
-                flipud=cfg.flipud,
-                fliplr=cfg.fliplr,
-                degrees=cfg.degrees,
-                hsv_v=cfg.hsv_v,
-                hsv_s=cfg.hsv_s,
-                seed=cfg.seed,
-                deterministic=cfg.deterministic,
-                workers=cfg.workers,
-                exist_ok=cfg.exist_ok,
-                nms=False,
-                plots=True,
-                val=True,
+                **_train_kwargs(cfg, batch),
             )
             p_trainer = getattr(polish_model, "trainer", None)
             p_best = (
@@ -606,9 +565,7 @@ def run_training_pipeline(cfg: TrainConfig) -> TrainArtifacts:
         "train_config": {
             "epochs": cfg.epochs,
             "patience": cfg.patience,
-            "requested_batch": cfg.batch,
-            "probed_batch": probed_batch,
-            "resolved_batch": resolved_batch,
+            "batch": batch,  # 固定整数 batch（原 requested/probed/resolved/fallback 已收敛为单键）
             "imgsz": cfg.imgsz,
             "device": cfg.device,
             "amp": cfg.amp,
@@ -627,7 +584,6 @@ def run_training_pipeline(cfg: TrainConfig) -> TrainArtifacts:
             "copy_paste": cfg.copy_paste,
             "close_mosaic": cfg.close_mosaic,
             "mosaic_polish_epochs": cfg.mosaic_polish_epochs,
-            "fallback_batch": cfg.fallback_batch,
             "workers": cfg.workers,
             "exist_ok": cfg.exist_ok,
             "seed": cfg.seed,
@@ -666,8 +622,7 @@ def run_training_pipeline(cfg: TrainConfig) -> TrainArtifacts:
         best_e2e_onnx=best_e2e_onnx,
         metrics_json=metrics_json,
         sha256sums=sha256sums,
-        resolved_batch=resolved_batch,
-        probed_batch=probed_batch,
+        batch=batch,
         val_map50=val_metrics_e2e.get("mAP50"),
         val_map50_95=val_metrics_e2e.get("mAP50_95"),
         dry_run=False,
@@ -682,34 +637,39 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--model",
         type=Path,
-        default=Path("/root/autodl-tmp/tomori/weights/yolo26s.pt"),
-        help="唯一允许 yolo26s.pt",
+        required=True,
+        help="唯一允许 yolo26s.pt 的权重路径（机器特定路径，必填）",
     )
     parser.add_argument(
         "--project",
         type=Path,
-        default=Path("/root/autodl-tmp/tomori/runs"),
+        required=True,
+        help="训练输出根目录（机器特定路径，必填）",
     )
-    parser.add_argument("--name", default="streetlight_v1")
+    parser.add_argument("--name", default=_DEFAULTS["run_name"])
     parser.add_argument("--model-version", default="yolo26s-streetlight-v1.0")
-    parser.add_argument("--imgsz", type=int, default=config.EXPECTED_YOLO_IMG_SIZE)
-    parser.add_argument("--epochs", type=int, default=500)
-    parser.add_argument("--patience", type=int, default=20)
-    parser.add_argument("--batch", type=int, default=-1, help="-1 为 AutoBatch 向下取 2 的幂")
-    parser.add_argument("--fallback-batch", type=int, default=16)
+    parser.add_argument("--imgsz", type=int, default=_DEFAULTS["imgsz"])
+    parser.add_argument("--epochs", type=int, default=_DEFAULTS["epochs"])
+    parser.add_argument("--patience", type=int, default=_DEFAULTS["patience"])
+    parser.add_argument(
+        "--batch",
+        type=int,
+        default=_DEFAULTS["batch"],
+        help="固定整数 batch >= 1（不探测、不向下取 2 的幂）",
+    )
     parser.add_argument("--device", default="0")
-    parser.add_argument("--optimizer", default="auto")
-    parser.add_argument("--lr0", type=float, default=0.01)
-    parser.add_argument("--lrf", type=float, default=0.01)
+    parser.add_argument("--optimizer", default=_DEFAULTS["optimizer"])
+    parser.add_argument("--lr0", type=float, default=_DEFAULTS["lr0"])
+    parser.add_argument("--lrf", type=float, default=_DEFAULTS["lrf"])
     parser.add_argument("--cos-lr", action="store_true")
-    parser.add_argument("--close-mosaic", type=int, default=10)
+    parser.add_argument("--close-mosaic", type=int, default=_DEFAULTS["close_mosaic"])
     parser.add_argument("--mosaic-polish-epochs", type=int, default=0)
-    parser.add_argument("--workers", type=int, default=8)
-    parser.add_argument("--flipud", type=float, default=0.0)
-    parser.add_argument("--hsv-v", type=float, default=0.25)
-    parser.add_argument("--hsv-s", type=float, default=0.4)
-    parser.add_argument("--degrees", type=float, default=5.0)
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--workers", type=int, default=_DEFAULTS["workers"])
+    parser.add_argument("--flipud", type=float, default=_DEFAULTS["flipud"])
+    parser.add_argument("--hsv-v", type=float, default=_DEFAULTS["hsv_v"])
+    parser.add_argument("--hsv-s", type=float, default=_DEFAULTS["hsv_s"])
+    parser.add_argument("--degrees", type=float, default=_DEFAULTS["degrees"])
+    parser.add_argument("--seed", type=int, default=_DEFAULTS["seed"])
     parser.add_argument("--no-amp", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--export-only", action="store_true")
@@ -728,7 +688,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         epochs=args.epochs,
         patience=args.patience,
         batch=args.batch,
-        fallback_batch=args.fallback_batch,
         device=args.device,
         amp=not args.no_amp,
         optimizer=args.optimizer,
