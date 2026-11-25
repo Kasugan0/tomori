@@ -721,3 +721,86 @@ print("PEP562_LAZY_OK")
     )
     assert proc.returncode == 0, f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
     assert "PEP562_LAZY_OK" in proc.stdout
+
+
+def test_clean_drop_occluded_produces_nc3_names_and_drops_cid3_boxes(tmp_path: Path) -> None:
+    """`clean_drop_occluded=True` -> `nc=3`/`names` 3 项（无 `streetlight_occluded`）；
+    `cid==3` 框被删（`clean_stats.occluded_deleted`）；`False` 对照 `nc=4`."""
+    src = tmp_path / "nc3_src"
+    specs = [
+        ("train", "s0", "0 0.5 0.5 0.2 0.3\n3 0.3 0.3 0.2 0.2\n"),
+        ("train", "s1", "1 0.5 0.5 0.2 0.3\n"),
+        ("train", "s2", "2 0.5 0.5 0.2 0.3\n3 0.5 0.5 0.1 0.1\n"),
+        ("val", "s3", "0 0.5 0.5 0.2 0.2\n"),
+        ("test", "s4", "1 0.5 0.5 0.2 0.2\n"),
+    ]
+    _seed_minimal_source(
+        src,
+        specs=specs,
+        yaml_names={
+            0: "streetlight_on",
+            1: "streetlight_off",
+            2: "streetlight_damaged",
+            3: "streetlight_occluded",
+        },
+    )
+
+    out = tmp_path / "out_nc3"
+    res = prepare_dataset(
+        DatasetPrepConfig(
+            sources=(DatasetSourceSpec(name="nc3", root_dir=src),),
+            output_dir=out,
+            dedupe_phash=False,
+            clean_drop_occluded=True,
+            allow_small_groups=True,
+        )
+    )
+    manifest = json.loads(res.manifest_path.read_text(encoding="utf-8"))
+
+    # 1) data.yaml: `nc: 3` + `names` 3 项（dict-form），无 occluded
+    yaml_text = res.data_yaml_path.read_text(encoding="utf-8")
+    assert "nc: 3" in yaml_text
+    assert "streetlight_occluded" not in yaml_text
+
+    # 2) manifest.target_names: 恰 3 项，无 occluded
+    tnames = manifest["target_names"]
+    assert len(tnames) == 3
+    assert set(tnames.values()) == {
+        "streetlight_on",
+        "streetlight_off",
+        "streetlight_damaged",
+    }
+    assert "streetlight_occluded" not in tnames.values()
+
+    # 3) split class_image_counts/class_box_counts: 仅 3 键，无 occluded
+    for sp in ("train", "val", "test"):
+        img_counts = manifest["splits"][sp]["class_image_counts"]
+        box_counts = manifest["splits"][sp]["class_box_counts"]
+        assert "streetlight_occluded" not in img_counts
+        assert "streetlight_occluded" not in box_counts
+
+    # 4) clean_stats.occluded_deleted == 2（两个 cid==3 框被删）
+    assert manifest["clean_stats"]["occluded_deleted"] == 2
+
+    # 5) 输出 labels 中不存在 cid==3 行
+    for lbl in (out / "labels").rglob("*.txt"):
+        for line in lbl.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                assert int(line.split()[0]) != 3, lbl
+
+    # 6) 对照：`clean_drop_occluded=False` -> `nc=4`、`streetlight_occluded` 保留
+    out4 = tmp_path / "out_nc4"
+    res4 = prepare_dataset(
+        DatasetPrepConfig(
+            sources=(DatasetSourceSpec(name="nc4", root_dir=src),),
+            output_dir=out4,
+            dedupe_phash=False,
+            clean_drop_occluded=False,
+            allow_small_groups=True,
+        )
+    )
+    man4 = json.loads(res4.manifest_path.read_text(encoding="utf-8"))
+    assert len(man4["target_names"]) == 4
+    assert "streetlight_occluded" in man4["target_names"].values()
+    assert "nc: 4" in res4.data_yaml_path.read_text(encoding="utf-8")
+    assert man4["clean_stats"]["occluded_deleted"] == 0
