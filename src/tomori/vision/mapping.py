@@ -161,6 +161,8 @@ def _normalize_raw_class(raw_class: str) -> RawClass:
         return "streetlight_off"
     if normalized == "streetlight_damaged":
         return "streetlight_damaged"
+    # task-165：`occluded` 类明确弃用（`merged_v7` `nc=3`，模型不产出该类）；
+    # 映射分支保留仅为 `API` `fault_type=OCCLUDED`（巡查员手工报障）与共享契约兼容
     if normalized == "streetlight_occluded":
         return "streetlight_occluded"
     raise VisionError(
@@ -348,6 +350,8 @@ def map_detection(
         )
     else:
         # 分支 6：streetlight_occluded（全天候遮挡候选）
+        # task-165：`occluded` 类弃用（`merged_v7` `nc=3`，模型不产出该类）；
+        # 分支保留仅为 `API` `fault_type=OCCLUDED`（巡查员手工报障）与共享契约兼容
         candidate_fault_type = "OCCLUDED"
         visual_signal_state = "OCCLUDED"
         is_fault_candidate = True

@@ -207,6 +207,9 @@ class DatasetPrepConfig:
     clean_occluded_model: Path | None = (
         None  # `best.pt`：`occluded` 自证重标（`conf>=0.65` 判 `on`）
     )
+    # `task-165`：`occluded` 类明确弃用（`nc=3`）——`_clean_samples` 兜底删 `cid==3`，
+    # 输出层 `data.yaml` `nc`/`names`/`target_names`/`split_class_*` 均为 `3` 类
+    clean_drop_occluded: bool = False
 
     def __post_init__(self) -> None:
         if not self.sources:
@@ -1145,6 +1148,13 @@ def _deterministic_hash(seed: int, key: str) -> str:
     return hashlib.sha256(f"{seed}:{key}".encode()).hexdigest()
 
 
+def _out_names(cfg: DatasetPrepConfig) -> dict[int, str]:
+    """`merged_v7` 输出类表：`occluded` 弃用（`cid==3`）时从 `TARGET_NAMES` 剔除."""
+    if cfg.clean_drop_occluded:
+        return {k: v for k, v in TARGET_NAMES.items() if k != 3}
+    return TARGET_NAMES
+
+
 def _clean_samples(
     samples: list[_ImageSample],
     *,
@@ -1240,6 +1250,10 @@ def _clean_samples(
                     stats["occluded_relabeled_on"] += 1
                 else:
                     stats["occluded_deleted"] += 1
+                continue
+            if cid == 3 and cfg.clean_drop_occluded:
+                # `task-165`：`occluded` 弃用——无自证模型时兜底删 `cid==3`（`nc=3` 输出）
+                stats["occluded_deleted"] += 1
                 continue
             # `damaged` 全保留（`task-161` 已证「杆体 vs 灯头」语义混杂但不删，
             # 由 `D-30` 映射层按「设施损坏」语义处理）
@@ -1568,17 +1582,17 @@ def _materialize_file(src: Path, dst: Path, link_mode: str) -> None:
         shutil.copy2(src, dst)
 
 
-def _write_data_yaml(output_dir: Path) -> Path:
+def _write_data_yaml(output_dir: Path, *, names: dict[int, str]) -> Path:
     yaml_path = output_dir / "data.yaml"
     lines = [
         f"path: {output_dir.resolve()}",
         "train: images/train",
         "val: images/val",
         "test: images/test",
-        f"nc: {len(TARGET_NAMES)}",
+        f"nc: {len(names)}",
         "names:",
     ]
-    for cid, cname in TARGET_NAMES.items():
+    for cid, cname in names.items():
         lines.append(f"  {cid}: {cname}")
     yaml_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return yaml_path
@@ -1788,6 +1802,9 @@ def prepare_dataset(cfg: DatasetPrepConfig) -> PrepResult:
     # `occluded` 自证重标（`best.pt` 判 `on` `conf>=0.65` → 改 `3`→`0`，其余删框）；
     # `damaged` 全保留（`D-30` 按「设施损坏」语义）；全部基于现有数据、零人工标注
     kept_samples, clean_stats = _clean_samples(kept_samples, cfg=cfg)
+    out_names = _out_names(
+        cfg
+    )  # `nc`/`names`/`target_names`/`split_class_*` 输出类表（`nc=3` 兼容）
     for s in kept_samples:
         stats_by_source[s.source_name].kept_images += 1
         if s.is_preaugmented:
@@ -1865,14 +1882,14 @@ def prepare_dataset(cfg: DatasetPrepConfig) -> PrepResult:
         split_box_counts[s.split] += len(s.boxes)
         present_classes = {cls_id for cls_id, *_ in s.boxes}
         for cls_id in present_classes:
-            split_class_images[s.split][TARGET_NAMES[cls_id]] += 1
+            split_class_images[s.split][out_names[cls_id]] += 1
         for cls_id, *_ in s.boxes:
-            split_class_boxes[s.split][TARGET_NAMES[cls_id]] += 1
+            split_class_boxes[s.split][out_names[cls_id]] += 1
 
     # 逐类别框数占比与目标比例偏差（供切分质量审计）
     class_totals = {
         cname: sum(split_class_boxes[sp][cname] for sp in ("train", "val", "test"))
-        for cname in TARGET_NAMES.values()
+        for cname in out_names.values()
     }
     class_proportion_deviation: dict[str, dict[str, dict[str, Any]]] = {}
     for cname, tot in class_totals.items():
@@ -1894,11 +1911,11 @@ def prepare_dataset(cfg: DatasetPrepConfig) -> PrepResult:
             }
         class_proportion_deviation[cname] = entry
 
-    data_yaml_path = _write_data_yaml(out_dir)
+    data_yaml_path = _write_data_yaml(out_dir, names=out_names)
     manifest_payload: dict[str, Any] = {
         "generated_at": datetime.now(tz=UTC).isoformat(),
         "output_dir": str(out_dir.resolve()),
-        "target_names": TARGET_NAMES,
+        "target_names": out_names,
         "config": {
             "train_ratio": cfg.train_ratio,
             "val_ratio": cfg.val_ratio,
@@ -1910,6 +1927,11 @@ def prepare_dataset(cfg: DatasetPrepConfig) -> PrepResult:
             "forbid_preaug_in_val_test": cfg.forbid_preaug_in_val_test,
             "seed": cfg.seed,
             "link_mode": cfg.link_mode,
+            "clean_day_mean_v_max": cfg.clean_day_mean_v_max,
+            "clean_occluded_model": (
+                str(cfg.clean_occluded_model) if cfg.clean_occluded_model else None
+            ),
+            "clean_drop_occluded": cfg.clean_drop_occluded,
         },
         "etl_funnel_totals": {
             "raw_images_found": sum(st.raw_images_found for st in stats_by_source.values()),
@@ -1988,10 +2010,10 @@ def prepare_dataset(cfg: DatasetPrepConfig) -> PrepResult:
                 "unique_phash_clusters": len(split_clusters[sp]),
                 "source_image_counts": dict(sorted(split_source_counts[sp].items())),
                 "class_image_counts": {
-                    cname: split_class_images[sp][cname] for cname in TARGET_NAMES.values()
+                    cname: split_class_images[sp][cname] for cname in out_names.values()
                 },
                 "class_box_counts": {
-                    cname: split_class_boxes[sp][cname] for cname in TARGET_NAMES.values()
+                    cname: split_class_boxes[sp][cname] for cname in out_names.values()
                 },
             }
             for sp in ("train", "val", "test")
@@ -2147,6 +2169,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None,
         help="`best.pt`：`occluded` 自证重标（`conf>=0.65` 判 `on` → `3`→`0`）",
     )
+    parser.add_argument(
+        "--drop-occluded",
+        "--nc3",
+        action="store_true",
+        dest="clean_drop_occluded",
+        help="`task-165`：`occluded` 弃用——删 `cid==3` + `nc`/`names`/`target_names` 改 `3` 类",
+    )
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     specs = tuple(_parse_source_arg(item) for item in args.source)
@@ -2165,6 +2194,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         allow_small_groups=args.allow_small_groups,
         clean_day_mean_v_max=args.clean_day_mean_v_max,
         clean_occluded_model=args.clean_occluded_model,
+        clean_drop_occluded=args.clean_drop_occluded,
     )
     res = prepare_dataset(cfg)
     print(

@@ -17,6 +17,9 @@ RawClass = Literal[
     "streetlight_on",
     "streetlight_off",
     "streetlight_damaged",
+    # task-165：`occluded` 类明确弃用（`merged_v7` `nc=3`）；保留字面量仅为
+    # `API`/`contract` 与 `config.RAW_CLASSES`（`nc=4` 共享契约）兼容——`nc=3` 模型
+    # 不会产出 `occluded` 候选，但 `fault_type`/`fault_candidate` 枚举不动
     "streetlight_occluded",
 ]
 FaultType = Literal["LAMP_OUT", "FIXTURE_DAMAGED", "OCCLUDED", "OTHER"]
