@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1060 720" font-family="system-ui,sans-serif" font-size="13">
+  <style>
+    .box{fill:#f4f8ff;stroke:#4169a8;stroke-width:1.5}
+    .hdr{fill:#4169a8;font-weight:bold;font-size:14px}
+    .layer{fill:#fff;stroke:#666;stroke-width:1.2}
+    .arr{stroke:#888;stroke-width:1.4;marker-end:url(#a)}
+    .arrd{stroke:#b48;stroke-width:1.4;stroke-dasharray:5,3;marker-end:url(#a)}
+    text{text-anchor:middle}
+  </style>
+  <defs><marker id="a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#888"/></marker></defs>
+  <text x="530" y="28" font-size="20" font-weight="bold">#141 系统架构（src 三层 + 远端训练链）</text>
+  <rect class="box" x="30" y="60" width="240" height="120" rx="8"/><text class="hdr" x="150" y="80">客户端 — Vue 3 SPA</text>
+  <rect class="layer" x="50" y="95" width="200" height="60" rx="4"/><text x="150" y="118">src/frontend/src</text><text x="150" y="138">views / components / stores / api</text>
+  <rect class="box" x="30" y="230" width="340" height="430" rx="8"/><text class="hdr" x="200" y="250">FastAPI Backend — src/backend/tomori</text>
+  <rect class="layer" x="50" y="265" width="300" height="58" rx="4"/><text x="200" y="288">api/ 薄壳（deps/errors/v1 路由）</text>
+  <rect class="layer" x="50" y="333" width="300" height="58" rx="4"/><text x="200" y="356">services/ 重逻辑（state_machine/事务/SLA/幂等/媒体/返修）</text>
+  <rect class="layer" x="50" y="401" width="300" height="58" rx="4"/><text x="200" y="424">models/ 17 表 SQLAlchemy</text>
+  <rect class="layer" x="50" y="469" width="300" height="58" rx="4"/><text x="200" y="492">schemas/ Pydantic 契约</text>
+  <rect class="layer" x="50" y="537" width="300" height="58" rx="4"/><text x="200" y="560">workers/ notifier + sla_scanner</text>
+  <rect class="layer" x="50" y="605" width="300" height="46" rx="4"/><text x="200" y="628">vision/ 13 文件（whitelist→client→mapping→metrics）</text>
+  <rect class="box" x="450" y="60" width="280" height="180" rx="8"/><text class="hdr" x="590" y="80">数据库 — PostgreSQL 17.12</text>
+  <rect class="layer" x="470" y="95" width="240" height="60" rx="4"/><text x="590" y="118">schema.sql / migrations 0001-0004</text><text x="590" y="138">17 表 / 76 CHECK / 41 FK / 37 索引 / 6 部分唯一</text>
+  <rect class="layer" x="470" y="165" width="240" height="60" rx="4"/><text x="590" y="188">tomori_dev / tomori_test</text><text x="590" y="208">psycopg async（SQLAlchemy 2.0）</text>
+  <rect class="box" x="450" y="290" width="280" height="370" rx="8"/><text class="hdr" x="590" y="310">远端训练链 — RTX 4080 SUPER</text>
+  <rect class="layer" x="470" y="325" width="240" height="56" rx="4"/><text x="590" y="348">rsync src → dataset_prep</text><text x="590" y="368">merged_v7（nc=3 清洗）</text>
+  <rect class="layer" x="470" y="391" width="240" height="56" rx="4"/><text x="590" y="414">trainer（yolo train）</text><text x="590" y="434">batch=24 / imgsz=1280 / e2e</text>
+  <rect class="layer" x="470" y="457" width="240" height="56" rx="4"/><text x="590" y="480">export ONNX + metrics.json</text><text x="590" y="500">SHA256SUMS 生成</text>
+  <rect class="layer" x="470" y="523" width="240" height="56" rx="4"/><text x="590" y="546">rsync 回传 + sha256sum -c</text><text x="590" y="566">client.py D-30/damaged 验收</text>
+  <rect class="layer" x="470" y="590" width="240" height="56" rx="4"/><text x="590" y="613">vision/weights|reports/datasets/runs（gitignored）</text>
+  <ellipse class="layer" cx="140" cy="690" rx="120" ry="22"/><text x="140" y="694">uvicorn 127.0.0.1:18141</text>
+  <ellipse class="layer" cx="390" cy="690" rx="120" ry="22"/><text x="390" y="694">vite 127.0.0.1:15173</text>
+  <ellipse class="layer" cx="640" cy="690" rx="140" ry="22"/><text x="640" y="694">PG 127.0.0.1:25432（dev/test/e2e 隔离）</text>
+  <line class="arr" x1="200" y1="120" x2="200" y2="265"/>
+  <line class="arr" x1="200" y1="323" x2="200" y2="333"/>
+  <line class="arr" x1="200" y1="391" x2="200" y2="401"/>
+  <line class="arr" x1="200" y1="459" x2="200" y2="469"/>
+  <line class="arr" x1="200" y1="527" x2="200" y2="537"/>
+  <line class="arr" x1="200" y1="595" x2="200" y2="605"/>
+  <line class="arr" x1="370" y1="430" x2="450" y2="150"/>
+  <line class="arrd" x1="730" y1="530" x2="370" y2="620"/>
+  <line class="arr" x1="140" y1="180" x2="140" y2="668"/>
+  <line class="arr" x1="390" y1="180" x2="390" y2="668"/>
+  <line class="arr" x1="590" y1="240" x2="590" y2="668"/>
+</svg>

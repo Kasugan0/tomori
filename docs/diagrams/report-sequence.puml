@@ -1,0 +1,39 @@
+@startuml report-sequence
+!theme plain
+title #141 AI 报障时序（upload → vision → confirm → dispatch）
+
+actor INSPECTOR as I
+participant "FastAPI /tickets/ai-candidates" as api
+participant "media.py 白名单" as media
+participant "vision.whitelist" as wl
+participant "VisionClient" as vc
+participant "mapping" as map
+participant "fault_tickets" as db
+participant "audit_logs" as audit
+participant "notification_tasks" as notif
+
+I -> api : POST /tickets/ai-candidates (1-10 图, 幂等键)
+api -> media : 文件大小 ≤15MiB / 格式/像素校验
+media -> wl : 魔数 → 多帧/视频 → 40MP → EXIF → 解码
+wl -> api : 415 UNSUPPORTED_IMAGE_FORMAT（若不符）
+api -> vc : analyze(images, scene_lighting_hint)
+vc -> vc : whitelist 四层 → ONNX nc=3 + OpenCV 融合
+vc -> map : raw_class → candidate_fault_type / visual_signal_state / is_fault_candidate
+map --> vc : NORMAL_LIT / LAMP_OUT / FIXTURE_DAMAGED / null
+api -> db : INSERT fault_tickets(AI_CANDIDATE_PENDING) + fault_evidences(若候选 ≥1)
+api -> audit : audit_logs(AI_CANDIDATE_GENERATED)
+api -> notif : notification_tasks(TICKET_*)
+api --> I : 200 {ticket | {evidences}} (幂等键回写)
+
+I -> api : POST /tickets/{id}/confirm (confirmed_by_inspector=true, Idempotency-Key)
+api -> db : UPDATE fault_tickets → PENDING_DISPATCH + grading_snapshot_json + repair_deadline_at(+48h)
+api -> audit : TICKET_CONFIRMED + TICKET_GRADED
+api -> notif : DISPATCH_PENDING
+api --> I : 200 分级完成
+
+I -> api : POST /tickets/{id}/dispatch (ADMIN, Idempotency-Key)
+api -> db : INSERT dispatch_records + UPDATE fault_tickets → DISPATCHED
+api -> audit : TICKET_DISPATCHED
+api -> notif : TICKET_DISPATCHED → TECHNICIAN
+api --> I : 200 派工完成
+@enduml

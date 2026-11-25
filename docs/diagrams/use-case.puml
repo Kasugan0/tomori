@@ -1,0 +1,49 @@
+@startuml use-case
+!theme plain
+title #141 公共照明故障工单系统 — 用例（UC-01..UC-09）
+
+actor "ADMIN\n(运维管理员)" as admin
+actor "INSPECTOR\n(巡查员)" as inspector
+actor "TECHNICIAN\n(维修员)" as technician
+actor "巡检系统\n(AI 视觉)" as vision <<actor>>
+
+rectangle "UC-01 认证与授权" {
+  admin --> (登录)
+  inspector --> (登录)
+  technician --> (登录)
+  admin --> (管理账号/授权)
+}
+rectangle "UC-02 主数据" {
+  admin --> (维护区域/点位/资产/业务规则)
+}
+rectangle "UC-04 AI 报障" {
+  inspector --> (上传静态图片 1-10)
+  vision --> (白名单四层校验)
+  vision --> (YOLO26s nc=3 推理 + OpenCV 融合)
+  vision --> (ai_result_json 候选)
+  inspector --> (确认/修改/剔除候选)
+  inspector --> (确认 → 分级快照 + 48h)
+}
+rectangle "UC-05 业务规则" {
+  admin --> (配置 business_rules 5 类)
+}
+rectangle "UC-06 派工" {
+  admin --> (工单分级派工)
+}
+rectangle "UC-07 幂等" {
+  vision --> (Idempotency-Key 唯一)
+}
+rectangle "UC-08 维修" {
+  technician --> (接单/拒单/完工/升级)
+}
+rectangle "UC-09 验收/返修/复核" {
+  inspector --> (验收 APPROVED/REJECTED)
+  technician --> (返修单维修)
+  admin --> (MANUAL_REVIEW 决断)
+}
+rectangle "UC-10 通知/审计" {
+  vision --> (audit_logs 写入)
+  vision --> (notification_tasks fan-out)
+  admin --> (DEAD_LETTER 重试/确认)
+}
+@enduml

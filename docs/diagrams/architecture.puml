@@ -1,0 +1,36 @@
+@startuml architecture
+!theme plain
+title #141 系统架构（src 三层布局 + 远端训练链）
+
+node "客户端" {
+  [Vue 3 SPA\nsrc/frontend/src\n(views / components / stores / api)]
+}
+node "FastAPI Backend\nsrc/backend/tomori" {
+  [api/ 薄壳\n(deps/errors/v1 路由)]
+  [services/ 重逻辑\n(state_machine/ticket_service/dispatch/rework/sla/grading/auth/media)]
+  [models/ 17 表 SQLAlchemy]
+  [schemas/ Pydantic 契约]
+  [workers/ notifier + sla_scanner]
+  [vision/ 13 文件\n(whitelist/client/mapping/metrics/contract/errors/image_io/baseline/config/eda/dataset_prep/trainer)]
+}
+node "数据库" {
+  [PostgreSQL 17.12\nschema.sql\n17 表 / 76 CHECK / 41 FK / 37 索引 / 6 部分唯一\nmigrations/versions/0001..0004]
+}
+node "远端训练链\nRTX 4080 SUPER" {
+  [rsync src → dataset_prep\n(merged_v7 nc=3 清洗)]
+  [trainer(yolo train)\n(batch=24 / imgsz=1280)]
+  [export ONNX + metrics + SHA256SUMS]
+  [rsync 回传 + client.py 验收]
+}
+cloud {
+  [uvicorn 18141]
+  [vite 15173]
+}
+[Vue 3 SPA] ..> [api/ 薄壳] : HTTP/JSON + Idempotency-Key + JWT
+[api/ 薄壳] --> [services/ 重逻辑]
+[services/ 重逻辑] --> [models/ 17 表 SQLAlchemy]
+[services/ 重逻辑] --> [workers/]
+[services/ 重逻辑] --> [vision/]
+[models/ 17 表 SQLAlchemy] --> [PostgreSQL 17.12] : psycopg
+[远端训练链] --> [vision/] : best_e2e.onnx / metrics.json / SHA256SUMS
+@enduml

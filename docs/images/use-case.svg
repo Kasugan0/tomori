@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 620" font-family="system-ui,sans-serif" font-size="14">
+  <style>
+    .pkg{fill:#eef4ff;stroke:#4a6bb5;stroke-width:1.5}
+    .pkg-title{fill:#4a6bb5;font-weight:bold}
+    .actor{fill:#fff;stroke:#333;stroke-width:1.5}
+    .uc{fill:#fff;stroke:#555;stroke-width:1.2}
+    .arr{stroke:#888;stroke-width:1.2;marker-end:url(#a)}
+    text{text-anchor:middle}
+  </style>
+  <defs><marker id="a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#888"/></marker></defs>
+  <text x="500" y="30" font-size="20" font-weight="bold">#141 公共照明故障工单系统 — 用例（UC-01..UC-09）</text>
+  <rect class="actor" x="30" y="70" width="120" height="60" rx="6"/><text x="90" y="105">ADMIN 运维管理员</text>
+  <rect class="actor" x="30" y="280" width="120" height="60" rx="6"/><text x="90" y="315">INSPECTOR 巡查员</text>
+  <rect class="actor" x="30" y="480" width="120" height="60" rx="6"/><text x="90" y="515">TECHNICIAN 维修员</text>
+  <rect class="pkg" x="200" y="50" width="220" height="110" rx="8"/><text class="pkg-title" x="310" y="70">UC-01 认证与授权</text>
+  <ellipse class="uc" cx="310" cy="95" rx="70" ry="16"/><text x="310" y="99">登录/JWT/吊销</text>
+  <ellipse class="uc" cx="310" cy="130" rx="80" ry="16"/><text x="310" y="134">管理账号/授权</text>
+  <rect class="pkg" x="200" y="190" width="220" height="110" rx="8"/><text class="pkg-title" x="310" y="210">UC-02 主数据</text>
+  <ellipse class="uc" cx="310" cy="235" rx="90" ry="16"/><text x="310" y="239">区域/点位/资产/规则</text>
+  <ellipse class="uc" cx="310" cy="270" rx="80" ry="16"/><text x="310" y="274">grading_rules/SLA</text>
+  <rect class="pkg" x="200" y="330" width="220" height="140" rx="8"/><text class="pkg-title" x="310" y="350">UC-04 AI 报障</text>
+  <ellipse class="uc" cx="310" cy="375" rx="80" ry="16"/><text x="310" y="379">上传 1-10 静态图</text>
+  <ellipse class="uc" cx="310" cy="410" rx="80" ry="16"/><text x="310" y="414">白名单四层校验</text>
+  <ellipse class="uc" cx="310" cy="445" rx="80" ry="16"/><text x="310" y="449">nc=3 推理+融合</text>
+  <rect class="pkg" x="200" y="500" width="220" height="90" rx="8"/><text class="pkg-title" x="310" y="520">UC-05/06/07 规则/派工/幂等</text>
+  <ellipse class="uc" cx="310" cy="545" rx="90" ry="16"/><text x="310" y="549">business_rules 5 类</text>
+  <ellipse class="uc" cx="310" cy="575" rx="80" ry="16"/><text x="310" y="579">分级派工/幂等</text>
+  <rect class="pkg" x="480" y="50" width="230" height="160" rx="8"/><text class="pkg-title" x="595" y="70">UC-08 维修</text>
+  <ellipse class="uc" cx="595" cy="95" rx="80" ry="16"/><text x="595" y="99">接单/拒单/完工</text>
+  <ellipse class="uc" cx="595" cy="130" rx="80" ry="16"/><text x="595" y="134">escalate/超时改派</text>
+  <ellipse class="uc" cx="595" cy="165" rx="85" ry="16"/><text x="595" y="169">materials/processes</text>
+  <rect class="pkg" x="480" y="250" width="230" height="140" rx="8"/><text class="pkg-title" x="595" y="270">UC-09 验收/返修/复核</text>
+  <ellipse class="uc" cx="595" cy="295" rx="85" ry="16"/><text x="595" y="299">APPROVED → CLOSED</text>
+  <ellipse class="uc" cx="595" cy="330" rx="85" ry="16"/><text x="595" y="334">REJECTED → 返修</text>
+  <ellipse class="uc" cx="595" cy="365" rx="90" ry="16"/><text x="595" y="369">MANUAL_REVIEW 决断</text>
+  <rect class="pkg" x="480" y="430" width="230" height="130" rx="8"/><text class="pkg-title" x="595" y="450">UC-10 通知/审计</text>
+  <ellipse class="uc" cx="595" cy="475" rx="85" ry="16"/><text x="595" y="479">audit_logs append-only</text>
+  <ellipse class="uc" cx="595" cy="510" rx="90" ry="16"/><text x="595" y="514">notification_tasks fan-out</text>
+  <ellipse class="uc" cx="595" cy="545" rx="85" ry="16"/><text x="595" y="549">DEAD_LETTER retry</text>
+  <line class="arr" x1="150" y1="100" x2="200" y2="95"/>
+  <line class="arr" x1="150" y1="310" x2="200" y2="330"/>
+  <line class="arr" x1="150" y1="510" x2="480" y2="520"/>
+  <line class="arr" x1="420" y1="400" x2="480" y2="140"/>
+  <line class="arr" x1="420" y1="430" x2="480" y2="500"/>
+  <rect class="actor" x="760" y="300" width="180" height="80" rx="6"/><text x="850" y="335">YOLO 视觉（进程内） yolo26s nc=3</text>
+  <line class="arr" x1="420" y1="400" x2="760" y2="330"/>
+</svg>

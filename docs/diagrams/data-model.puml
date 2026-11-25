@@ -1,0 +1,40 @@
+@startuml data-model
+!theme plain
+title #141 数据模型（17 表 / 76 CHECK / 41 FK / 37 索引 / 6 部分唯一）
+
+entity roles { + code : UNIQUE\n+ name }
+entity accounts { + username : UNIQUE\n+ status : CHECK\n+ token_version\n+ is_active }
+entity account_roles { + account_id : FK\n+ role_id : FK }
+entity scope_authorizations { + account_id : FK\n+ role_id : FK\n+ region_id : FK\n+ action\n+ expires_at\n+ is_active }
+entity maintenance_regions { + region_code : UNIQUE\n+ name\n+ parent_region_id : FK\n+ level : CHECK\n+ is_active }
+entity lighting_points { + point_code : UNIQUE\n+ region_id : FK\n+ road_level : CHECK\n+ lng\n+ lat\n+ pole_no }
+entity facility_assets { + asset_code : UNIQUE\n+ point_id : FK\n+ asset_type : CHECK\n+ importance : CHECK\n+ rated_power_w\n+ installed_at }
+entity fault_tickets { + ticket_no : UNIQUE\n+ lighting_point_id : FK\n+ fault_type : CHECK\n+ priority : CHECK\n+ status : CHECK\n+ confirmed_by_inspector\n+ repair_deadline_at\n+ rework_count\n+ grading_snapshot_json\n+ manual_review_reason\n+ cancel_reason }
+entity dispatch_records { + dispatch_no : UNIQUE\n+ ticket_id : FK\n+ technician_id : FK\n+ status : CHECK\n+ accept_deadline_at\n+ accepted_at\n+ reject_reason\n+ escalate_reason }
+entity repair_processes { + dispatch_id : FK\n+ process_no\n+ description\n+ work_started_at\n+ work_ended_at }
+entity material_usages { + dispatch_id : FK\n+ material_name\n+ quantity\n+ unit\n+ source }
+entity rework_orders { + rework_no : UNIQUE\n+ ticket_id : FK\n+ round_no\n+ requires_manual_review\n+ manual_review_decision\n+ status : CHECK\n+ source_acceptance_id : FK }
+entity acceptance_records { + ticket_id : FK\n+ decision : CHECK\n+ comment\n+ rework_order_id : FK }
+entity fault_evidences { + evidence_no : UNIQUE\n+ ticket_id : FK\n+ file_path\n+ sha256 : UNIQUE\n+ media_type\n+ raw_class\n+ is_fault_candidate\n+ ai_result_json }
+entity notification_tasks { + task_no : UNIQUE\n+ status : CHECK\n+ event_type : CHECK\n+ payload_json\n+ deep_link\n+ retry_count\n+ next_retry_at\n+ acknowledged_at\n+ dead_letter_reason }
+entity audit_logs { + action\n+ entity_type\n+ entity_id\n+ actor\n+ actor_role\n+ payload\n+ created_at }
+entity business_rules { + rule_code : UNIQUE\n+ rule_value\n+ rule_version\n+ is_active }
+
+roles ||--o{ account_roles
+accounts ||--o{ account_roles
+accounts ||--o{ scope_authorizations
+roles ||--o{ scope_authorizations
+maintenance_regions ||--o{ lighting_points
+lighting_points ||--o{ facility_assets
+lighting_points ||--o{ fault_tickets
+fault_tickets ||--o{ dispatch_records
+fault_tickets ||--o{ rework_orders
+fault_tickets ||--o{ fault_evidences
+fault_tickets ||--o{ acceptance_records
+dispatch_records ||--o{ repair_processes
+dispatch_records ||--o{ material_usages
+rework_orders }o--|| acceptance_records
+audit_logs : append-only
+notification_tasks : event_type 19 枚举
+business_rules : rule_code 5 默认
+@enduml

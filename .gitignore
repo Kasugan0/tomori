@@ -67,3 +67,6 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+# Local doc snapshots (task-194 restructure)
+docs/local/

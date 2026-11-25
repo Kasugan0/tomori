@@ -1,0 +1,41 @@
+@startuml domain-model
+!theme plain
+title #141 领域模型（17 表核心关系）
+
+class roles { code : UNIQUE\nname }
+class accounts { username : UNIQUE\nstatus\ntoken_version\nis_active }
+class account_roles { account_id\nrole_id }
+class scope_authorizations { account_id\nrole_id\nregion_id\naction\nis_active }
+class maintenance_regions { region_code : UNIQUE\nname\nparent_region_id\nlevel\nis_active }
+class lighting_points { point_code : UNIQUE\nregion_id\nroad_level\nlng\nlat\npole_no }
+class facility_assets { asset_code : UNIQUE\npoint_id\nasset_type\nimportance\nrated_power_w\ninstalled_at }
+class fault_tickets { ticket_no : UNIQUE\nlighting_point_id\nfault_type\npriority\nstatus\nconfirmed_by_inspector\nrepair_deadline_at\nrework_count\ngrading_snapshot_json }
+class dispatch_records { dispatch_no : UNIQUE\nticket_id\ntechnician_id\nstatus\naccept_deadline_at\nreject_reason\nescalate_reason }
+class repair_processes { process_no\ndispatch_id\ndescription\nwork_started_at\nwork_ended_at }
+class material_usages { dispatch_id\nmaterial_name\nquantity\nunit\nsource }
+class rework_orders { rework_no : UNIQUE\nticket_id\nround_no\nrequires_manual_review\nmanual_review_decision\nstatus\nsource_acceptance_id }
+class acceptance_records { ticket_id\ndecision\ncomment\nrework_order_id }
+class fault_evidences { evidence_no : UNIQUE\nticket_id\nfile_path\nsha256 : UNIQUE\nmedia_type\nraw_class\nis_fault_candidate\nai_result_json }
+class notification_tasks { task_no : UNIQUE\nstatus\nevent_type\npayload_json\ndeep_link\nretry_count\ndead_letter_reason }
+class audit_logs { action\nentity_type\nentity_id\nactor\nactor_role\npayload\ncreated_at }
+class business_rules { rule_code : UNIQUE\nrule_value\nrule_version\nis_active }
+
+roles "1" -- "*" account_roles
+accounts "1" -- "*" account_roles
+accounts "1" -- "*" scope_authorizations
+roles "1" -- "*" scope_authorizations
+maintenance_regions "1" -- "*" lighting_points
+lighting_points "1" -- "*" facility_assets
+lighting_points "1" -- "*" fault_tickets
+fault_tickets "1" -- "*" dispatch_records
+fault_tickets "1" -- "*" rework_orders
+fault_tickets "1" -- "*" fault_evidences
+fault_tickets "1" -- "*" acceptance_records
+dispatch_records "1" -- "*" repair_processes
+dispatch_records "1" -- "*" material_usages
+acceptance_records "1" -- "*" rework_orders
+rework_orders "0..1" --> "1" acceptance_records : source_acceptance_id
+audit_logs : append-only
+notification_tasks : event_type 19 枚举
+business_rules : rule_code 5 默认值
+@enduml
