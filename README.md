@@ -29,7 +29,7 @@
 | [`docs/04-详细设计.md`](docs/04-详细设计.md) | `4` 状态机 `29` 态/`36` 规则条目·`47` `(from,to)` 图边/`transition_*`/`34` 错误码/`INVALID_STATE_TRANSITION`/`MANUAL_FALLBACK`/`DEAD_LETTER` |
 | [`docs/05-数据设计.md`](docs/05-数据设计.md) | `17` 表/`76` CHECK/`41` FK/`37` 索引/`6` 部分唯一/`alembic` `0001..0004`/`seed_demo_data`/`business_rules` `5` 默认 |
 | [`docs/06-接口设计.md`](docs/06-接口设计.md) | `61` 端点清单 + `health`/`ai-candidates`/`whitelist`/`mapping`/`VisionClient`/`error.code` `34`/`HTTP_STATUS_BY_CODE`/`fallback`/`MANUAL_FALLBACK`/`requires_inspector_confirmation`/`ai_is_baseline_mode`/`vision_ready` |
-| [`docs/07-测试说明.md`](docs/07-测试说明.md) | `118` 单测+集成 + `31` E2E + `128` testid + `19` 变异杀灭 + `nc=3` 断言 + `69%` 覆盖率 + `PASS`/`SKIP`/`0` mock |
+| [`docs/07-测试说明.md`](docs/07-测试说明.md) | `118` 单测+集成 + `31` E2E + `128` testid + `19` 变异杀灭（`auditor` `task-208` 实跑 `~11` 条，`tester` 归因含新增路径合计量纲吻合）+ `nc=3` 断言 + `69%` 覆盖率 + `PASS`/`SKIP`/`0` mock |
 | [`docs/08-部署与使用说明.md`](docs/08-部署与使用说明.md) | `PG`/`uv`/`pnpm`/`uv sync`/`alembic`/`compose`/`env.sh`/`remote GPU`/`SSH`/`.env`/`application.yml`/`uvicorn`/`vite`/`worker`/`trainer`/`dataset_prep`/`rsync`/`sha256sum`/`admin`/`inspector`/`technician`/`health`/`ai-candidates`/`tickets`/`dispatches` |
 | [`docs/09-需求追踪表.md`](docs/09-需求追踪表.md) | `requirement-traceability.md` `15` 格矩阵 + `FR`→端点→测试 `29` 条映射 |
 
