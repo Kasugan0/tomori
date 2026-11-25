@@ -13,17 +13,21 @@ Driving model (deterministic, no sleeps):
 
 from __future__ import annotations
 
+import asyncio
 import re
+import threading
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
 from playwright.sync_api import Page
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, select, text
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from tests.e2e.conftest import (
+    E2E_DATABASE_URL,
     SYNC_DATABASE_URL,
     _localhost_client,
     api_get,
@@ -33,11 +37,36 @@ from tests.e2e.conftest import (
     login,
     logout,
 )
+from tomori.models.account import Account
+from tomori.models.notification_task import NotificationTask
+from tomori.services.state_machine import create_notification_task
+from tomori.workers.notifier import process_due_notifications_once
 
 
 def _idem_key() -> str:
     """Fresh Idempotency-Key (pattern ^[A-Za-z0-9_-]{8,128}$ required by the API)."""
     return f"e2e-{uuid.uuid4().hex[:16]}"
+
+
+def _run_async(coro: Any) -> Any:
+    """在**新建线程**里 `asyncio.run` 协程 —— 主线程被 pytest-playwright 的 runner loop
+    占据时，`asyncio.run()` 会报「cannot be called from a running event loop」；
+    新线程拥有自己的事件循环，是唯一可承载域异步函数的合法路径。
+    """
+    box: dict[str, Any] = {}
+
+    def _t() -> None:
+        try:
+            box["result"] = asyncio.run(coro)
+        except BaseException as exc:  # noqa: BLE001
+            box["error"] = exc
+
+    th = threading.Thread(target=_t, daemon=True)
+    th.start()
+    th.join(90)
+    if "error" in box:
+        raise box["error"]
+    return box.get("result")
 
 
 def _api_post_idem(
@@ -348,78 +377,79 @@ def test_notification_dead_letter_retry_acknowledge_and_read_ui(
     backend = backend_server
     admin_t = _admin_token(backend)
 
-    # Seed a DEAD_LETTER notification (SYNC INSERT fixture — same pattern as baseline seeds)
-    admin_id = _sync_rows("SELECT id FROM accounts WHERE username = 'admin'", {})[0][0]
-    _sync_exec(
-        """
-        INSERT INTO notification_tasks (
-          recipient_account_id, event_type, channel, status, title, body,
-          payload_json, related_ticket_id, related_dispatch_id, attempt_count,
-          max_attempts, next_retry_at, sent_at, last_error,
-          acknowledged_by_account_id, acknowledged_at, is_read, read_at,
-          created_at, updated_at
-        ) VALUES (
-          :rid, 'REPAIR_SLA_TIMEOUT', 'EMAIL', 'DEAD_LETTER', 'E2E 死信重试任务',
-          'SMTP 超时进入死信', '{"deep_link": "/tickets/1"}', NULL, NULL, 3, 3,
-          NULL, NULL, 'channel_email_not_configured_in_v1',
-          NULL, NULL, false, NULL, now(), now()
-        )
-        """,
-        {"rid": admin_id},
-    )
-    dl_id = _sync_rows(
-        "SELECT id FROM notification_tasks WHERE status='DEAD_LETTER' "
-        "AND title='E2E 死信重试任务' ORDER BY id DESC LIMIT 1",
-        {},
-    )[0][0]
+    # 域路径造 DEAD_LETTER / SENT / 未读通知（原生 INSERT 仅允许用于「列级」
+    # 时间戳回填；状态字段必须经 `create_notification_task` + worker 退避链产生）。
+    # `DEAD_LETTER` 无法直接构造——只能由 worker 对失败通道多次退避后产生
+    # （`workers/notifier.py` 的 `transition_notification` 合法边 D4→D6）。
+    async def _seed_notifications() -> tuple[int, int, int, int]:
+        engine = create_async_engine(E2E_DATABASE_URL)
+        try:
+            async with AsyncSession(engine) as s:
+                admin = await s.scalar(select(Account).where(Account.username == "admin"))
+                assert admin is not None
+                admin_id_local = admin.id  # capture before commit (object expires after)
+                email_dl = create_notification_task(
+                    s,
+                    recipient_account_id=admin.id,
+                    event_type="REPAIR_SLA_TIMEOUT",
+                    channel="EMAIL",
+                    title="E2E 死信重试任务",
+                    body="SMTP 超时进入死信",
+                    payload_json={"deep_link": "/tickets/1"},
+                    max_attempts=3,
+                )
+                sms_dl = create_notification_task(
+                    s,
+                    recipient_account_id=admin.id,
+                    event_type="AI_CANDIDATE_EXPIRED",
+                    channel="SMS",
+                    title="E2E 死信确认任务",
+                    body="SMS 通道未配置进入死信",
+                    payload_json={"deep_link": "/tickets/2"},
+                    max_attempts=3,
+                )
+                mine_sent = create_notification_task(
+                    s,
+                    recipient_account_id=admin.id,
+                    event_type="TICKET_DISPATCHED",
+                    channel="IN_APP",
+                    title="E2E 已读标记任务",
+                    body="待标记已读的普通通知",
+                    payload_json={"deep_link": "/tickets/3"},
+                )
+                await s.flush()
+                dl_id, ack_id, mine_id = email_dl.id, sms_dl.id, mine_sent.id
+                await s.commit()
 
-    # A second dead letter for the acknowledge path
-    _sync_exec(
-        """
-        INSERT INTO notification_tasks (
-          recipient_account_id, event_type, channel, status, title, body,
-          payload_json, related_ticket_id, related_dispatch_id, attempt_count,
-          max_attempts, next_retry_at, sent_at, last_error,
-          acknowledged_by_account_id, acknowledged_at, is_read, read_at,
-          created_at, updated_at
-        ) VALUES (
-          :rid, 'AI_CANDIDATE_EXPIRED', 'SMS', 'DEAD_LETTER', 'E2E 死信确认任务',
-          'SMS 通道未配置进入死信', '{"deep_link": "/tickets/2"}', NULL, NULL, 3, 3,
-          NULL, NULL, 'channel_sms_not_configured_in_v1',
-          NULL, NULL, false, NULL, now(), now()
-        )
-        """,
-        {"rid": admin_id},
-    )
-    ack_id = _sync_rows(
-        "SELECT id FROM notification_tasks WHERE status='DEAD_LETTER' "
-        "AND title='E2E 死信确认任务' ORDER BY id DESC LIMIT 1",
-        {},
-    )[0][0]
+            t0 = datetime.now(UTC)
+            for off in (0, 60, 360):  # EMAIL/SMS 默认 dispatcher 必然失败
+                async with AsyncSession(engine) as s:
+                    await process_due_notifications_once(s, now=t0 + timedelta(seconds=off))
+            async with AsyncSession(engine) as s:
+                await process_due_notifications_once(
+                    s, dispatcher=lambda _task: True, now=t0 + timedelta(seconds=361)
+                )
+            async with AsyncSession(engine) as s:
+                dl_row = await s.scalar(
+                    select(NotificationTask).where(NotificationTask.id == dl_id)
+                )
+                ack_row = await s.scalar(
+                    select(NotificationTask).where(NotificationTask.id == ack_id)
+                )
+                mine_row = await s.scalar(
+                    select(NotificationTask).where(NotificationTask.id == mine_id)
+                )
+                assert dl_row is not None
+                assert dl_row.status == "DEAD_LETTER" and dl_row.attempt_count == 3
+                assert ack_row is not None
+                assert ack_row.status == "DEAD_LETTER" and ack_row.attempt_count == 3
+                assert mine_row is not None
+                assert mine_row.status == "SENT" and not mine_row.is_read
+        finally:
+            await engine.dispose()
+        return admin_id_local, dl_id, ack_id, mine_id
 
-    # A mine-notification for the mark-read flow
-    _sync_exec(
-        """
-        INSERT INTO notification_tasks (
-          recipient_account_id, event_type, channel, status, title, body,
-          payload_json, related_ticket_id, related_dispatch_id, attempt_count,
-          max_attempts, next_retry_at, sent_at, last_error,
-          acknowledged_by_account_id, acknowledged_at, is_read, read_at,
-          created_at, updated_at
-        ) VALUES (
-          :rid, 'TICKET_DISPATCHED', 'IN_APP', 'SENT', 'E2E 已读标记任务',
-          '待标记已读的普通通知', '{"deep_link": "/tickets/3"}', NULL, NULL, 0, 3,
-          NULL, now(), NULL,
-          NULL, NULL, false, NULL, now(), now()
-        )
-        """,
-        {"rid": admin_id},
-    )
-    mine_id = _sync_rows(
-        "SELECT id FROM notification_tasks WHERE status='SENT' "
-        "AND title='E2E 已读标记任务' ORDER BY id DESC LIMIT 1",
-        {},
-    )[0][0]
+    admin_id, dl_id, ack_id, mine_id = _run_async(_seed_notifications())
 
     login(page, frontend_url, "admin")
 

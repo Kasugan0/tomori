@@ -475,6 +475,8 @@ def login(page: Page, frontend_url: str, account_key: str) -> None:
     last_exc: Exception | None = None
     for _attempt, delay in enumerate(_LOGIN_BACKOFF_SECONDS, start=1):
         if delay > 0:
+            # 指数退避休眠节拍（backoff），不是元素等待 —— `auth-username-input` 可见性
+            # 由下方 `expect().to_be_visible` 保证；此处仅让下一次重试在冷编译后错峰发起。
             page.wait_for_timeout(int(delay * 1000))
         try:
             open_app(page, frontend_url, "/login")
