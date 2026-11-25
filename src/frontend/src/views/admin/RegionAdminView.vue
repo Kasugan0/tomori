@@ -62,7 +62,7 @@ const filteredRegions = computed(() => {
 async function load(): Promise<void> {
   loading.value = true
   try {
-    regions.value = await listRegionsApi({ flat: true, page_size: 100 })
+    regions.value = await listRegionsApi({ flat: true })
     metadataStore.regions = regions.value
   } catch {
     // 全局错误横幅已处理

@@ -11,7 +11,6 @@ export type TicketAction =
   | 'complete'
   | 'acceptance'
   | 'review-resolve'
-  | 'escalate'
 
 interface ActionRule {
   allow: ReadonlyArray<RoleCode>
@@ -35,7 +34,6 @@ const RULES: Record<TicketAction, ActionRule> = {
   complete: { allow: ['TECHNICIAN'], statuses: ['IN_REPAIR'] },
   acceptance: { allow: ['INSPECTOR'], statuses: ['PENDING_ACCEPTANCE'] },
   'review-resolve': { allow: ['ADMIN'], statuses: ['MANUAL_REVIEW'] },
-  escalate: { allow: ['TECHNICIAN'], statuses: ['IN_REPAIR'] },
 }
 
 export interface ActionUserContext {

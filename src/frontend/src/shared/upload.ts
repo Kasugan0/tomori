@@ -137,15 +137,6 @@ async function readImageDimensions(file: File): Promise<{ width: number; height:
   })
 }
 
-export function isStreamUrlText(value: string): boolean {
-  const lower = value.trim().toLowerCase()
-  return (
-    lower.startsWith('rtsp://') ||
-    lower.startsWith('rtmp://') ||
-    lower.includes('.m3u8')
-  )
-}
-
 /**
  * 严格遵循 docs/API.md §5 & §5.1 五步优先级：
  *  1) 张数 1..10 (ALLOW empty 时 0 跳过) -> TOO_MANY_FILES / NO_FILES

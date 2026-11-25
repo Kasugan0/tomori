@@ -109,7 +109,9 @@ apiClient.interceptors.response.use(
     const replayHeader = response.headers['x-idempotent-replay']
     if (String(replayHeader).toLowerCase() === 'true') {
       // X-Idempotent-Replay: true 是本项目扩展响应头（非 IETF 草案内容），按首次状态码正常放行
-      console.info('[tomori] X-Idempotent-Replay: true', response.config.url, response.status)
+      if (import.meta.env.DEV) {
+        console.info('[tomori] X-Idempotent-Replay: true', response.config.url, response.status)
+      }
     }
     return response
   },

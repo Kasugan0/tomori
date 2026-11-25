@@ -77,6 +77,14 @@ export type NotEligibleReason =
   | 'WRONG_ROLE'
   | 'OVERLOADED'
 
+export type DispatchMode = 'MANUAL' | 'AUTO_RECOMMENDED' | 'REASSIGN'
+
+export type DispatchCreateMode = 'MANUAL' | 'AUTO_RECOMMENDED'
+
+export type NotificationChannel = 'IN_APP' | 'SMS' | 'EMAIL'
+
+export type NotificationStatus = 'PENDING' | 'SENT' | 'PROCESSING' | 'FAILED' | 'DEAD_LETTER'
+
 export type RuleCode =
   | 'grading_rules'
   | 'sla_policy'
@@ -397,7 +405,7 @@ export interface DispatchRecordOut {
   technician_full_name?: string
   scope_authorization_id: number
   dispatched_by_account_id: number
-  dispatch_mode: string
+  dispatch_mode: DispatchMode
   status: DispatchStatus
   recommend_score: number | string | null
   dispatched_at: string
@@ -545,13 +553,13 @@ export interface NotificationTaskOut {
   id: number
   recipient_account_id: number
   event_type: string
-  channel: string
+  channel: NotificationChannel
   title: string
   body: string
   payload_json: Record<string, unknown> | null
   related_ticket_id: number | null
   related_dispatch_id: number | null
-  status: string
+  status: NotificationStatus
   attempt_count: number
   max_attempts: number
   next_retry_at: string | null
@@ -589,14 +597,4 @@ export interface SlaScanResponseOut {
   marked_overdue: number
   timeout_reassigned: number
   notifications_created: number
-}
-
-export interface DashboardSummaryOut {
-  pending_dispatch_count?: number
-  in_repair_count?: number
-  pending_acceptance_count?: number
-  manual_review_count?: number
-  sla_overdue_count?: number
-  dead_letter_count?: number
-  [key: string]: number | string | undefined
 }

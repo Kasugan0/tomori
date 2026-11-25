@@ -49,8 +49,7 @@ export interface CompleteRepairPayload {
 }
 
 export interface CompleteRepairResponseOut {
-  dispatch?: DispatchRecordOut
-  dispatcher?: DispatchRecordOut
+  dispatch: DispatchRecordOut
   ticket: FaultTicketOut
   repair_process_id: number
   material_usage_ids: number[]

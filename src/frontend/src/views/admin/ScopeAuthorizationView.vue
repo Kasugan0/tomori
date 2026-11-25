@@ -244,7 +244,7 @@ onMounted(async () => {
             v-for="scope in scopes"
             v-else
             :key="scope.id"
-            :data-testid="`scope-row-${scope.account_id}-${scope.region_id}`"
+            :data-testid="`scope-row-${scope.account_id}-${scope.region_id}-${scope.scope_type}`"
           >
             <td>{{ scope.id }}</td>
             <td>

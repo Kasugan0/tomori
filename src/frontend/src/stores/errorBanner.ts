@@ -1,4 +1,4 @@
-import { computed, ref } from 'vue'
+import { ref } from 'vue'
 import { defineStore } from 'pinia'
 import { ERROR_CODE_TEXT, getNotEligibleReasonText, VISION_FALLBACK_MESSAGES } from '@/shared/enums'
 import type { ApiError } from '@/shared/types'
@@ -21,7 +21,6 @@ export interface BannerState {
 
 export const useErrorBannerStore = defineStore('errorBanner', () => {
   const banner = ref<BannerState | null>(null)
-  const hasBanner = computed(() => banner.value !== null)
 
   function buildMessage(apiErr: ApiError): string {
     const { code, message, message_key, details } = apiErr.error
@@ -98,7 +97,6 @@ export const useErrorBannerStore = defineStore('errorBanner', () => {
 
   return {
     banner,
-    hasBanner,
     showFromApiError,
     showCustom,
     clear,

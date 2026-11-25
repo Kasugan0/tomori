@@ -1,6 +1,5 @@
 import { onMounted, onUnmounted, ref } from 'vue'
 
-export const BP_MOBILE_MAX = 767
 export const BP_DESKTOP_MIN = 992
 
 export function useIsDesktop() {

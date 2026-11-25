@@ -27,7 +27,7 @@ import {
   formatResponseDeadline,
   isDeadlinePast,
 } from '@/shared/format'
-import { useIdempotentSubmit } from '@/shared/idempotency'
+import { handleIdempotentError, useIdempotentSubmit } from '@/shared/idempotency'
 import type {
   AcceptanceDecision,
   DispatchCandidateItem,
@@ -288,18 +288,6 @@ async function loadDetail(): Promise<void> {
       loadError.value = err.error.message || '加载工单详情失败'
     } else {
       loadError.value = '加载工单详情失败'
-    }
-  }
-}
-
-function handleIdempotentError(
-  err: unknown,
-  submitter: ReturnType<typeof useIdempotentSubmit>,
-): void {
-  if (isApiError(err)) {
-    const code = err.error.code
-    if (code === 'IDEMPOTENCY_PAYLOAD_MISMATCH' || code === 'DUPLICATE_ACTIVE_TICKET') {
-      submitter.resetKey()
     }
   }
 }

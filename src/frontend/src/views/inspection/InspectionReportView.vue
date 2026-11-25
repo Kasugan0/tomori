@@ -7,6 +7,7 @@ import { isApiError } from '@/shared/api'
 import {
   FAULT_TYPE_LABELS,
   MANUAL_NOTE_REQUIRED_FAULT_TYPES,
+  PRIORITY_META,
 } from '@/shared/enums'
 import { formatConfidence, formatFileSize } from '@/shared/format'
 import { useIdempotentSubmit } from '@/shared/idempotency'
@@ -877,6 +878,19 @@ async function handleSubmit(): Promise<void> {
 
           <p class="candidate-summary">{{ item.candidate.diagnostic_summary }}</p>
 
+          <div class="candidate-severity-row">
+            <span class="severity-hint-label">AI 建议严重度：</span>
+            <el-tag
+              v-if="item.candidate.suggested_severity_hint !== 'none'"
+              :type="PRIORITY_META[item.candidate.suggested_severity_hint].tagType"
+              size="small"
+            >
+              {{ item.candidate.suggested_severity_hint }}
+              {{ PRIORITY_META[item.candidate.suggested_severity_hint].label }}
+            </el-tag>
+            <el-tag v-else type="info" size="small" effect="plain">无建议（参照/非故障）</el-tag>
+          </div>
+
           <el-alert
             v-if="item.candidate.opencv_roi_metrics.fusion_status === 'low_confidence_conflict'"
             :data-testid="`inspection-candidate-conflict-${item.flatIndex}`"
@@ -1313,6 +1327,19 @@ async function handleSubmit(): Promise<void> {
   font-size: 13px;
   line-height: 1.5;
   word-break: break-word;
+}
+
+.candidate-severity-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: var(--tomori-text-secondary);
+}
+
+.severity-hint-label {
+  font-weight: 600;
 }
 
 .candidate-actions {

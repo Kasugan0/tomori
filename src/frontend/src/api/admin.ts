@@ -117,12 +117,10 @@ export interface UpdateBusinessRuleMetaPayload {
 
 export async function listRegionsApi(params?: {
   flat?: boolean
-  page?: number
-  page_size?: number
 }): Promise<MaintenanceRegionOut[]> {
   const { data } = await apiClient.get<
     MaintenanceRegionOut[] | PaginatedResponse<MaintenanceRegionOut>
-  >('/regions', { params: { flat: true, page_size: 100, ...params } })
+  >('/regions', { params: { flat: params?.flat ?? true } })
   return Array.isArray(data) ? data : data.items
 }
 

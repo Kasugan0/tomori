@@ -41,6 +41,22 @@ export function isValidIdempotencyKey(key: string): boolean {
   return IDEMPOTENCY_KEY_PATTERN.test(key)
 }
 
+/**
+ * 统一处理幂等 POST 失败后的幂等键重置：`IDEMPOTENCY_PAYLOAD_MISMATCH`
+ * （同键异体被拒）与 `DUPLICATE_ACTIVE_TICKET`（业务冲突真实在途工单）
+ * 两类「payload 已变更」失败都必须换键后重试。原视图内两处逐字重复版本
+ * （`task-212` P3-18）收敛至此共享实现。
+ */
+export function handleIdempotentError(
+  err: unknown,
+  submitter: { resetKey: () => void },
+): void {
+  const code = (err as { error?: { code?: string } } | null | undefined)?.error?.code
+  if (code === 'IDEMPOTENCY_PAYLOAD_MISMATCH' || code === 'DUPLICATE_ACTIVE_TICKET') {
+    submitter.resetKey()
+  }
+}
+
 export function useIdempotentSubmit() {
   const isSubmitting = ref(false)
   const currentKey = ref<string | null>(null)

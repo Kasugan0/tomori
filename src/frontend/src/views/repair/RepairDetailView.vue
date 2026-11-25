@@ -20,7 +20,7 @@ import {
   formatRepairDeadline,
   isDeadlinePast,
 } from '@/shared/format'
-import { useIdempotentSubmit } from '@/shared/idempotency'
+import { handleIdempotentError, useIdempotentSubmit } from '@/shared/idempotency'
 import type {
   DispatchRecordOut,
   FaultTicketDetailOut,
@@ -37,7 +37,6 @@ interface MaterialDraftRow {
   material_name: string
   quantity: number
   unit: MaterialUnit
-  unit_price: number | null
 }
 
 const route = useRoute()
@@ -276,18 +275,6 @@ async function refreshAfterAction(): Promise<void> {
   }
 }
 
-function handleIdempotentError(
-  err: unknown,
-  submitter: ReturnType<typeof useIdempotentSubmit>,
-): void {
-  if (isApiError(err)) {
-    const code = err.error.code
-    if (code === 'IDEMPOTENCY_PAYLOAD_MISMATCH' || code === 'DUPLICATE_ACTIVE_TICKET') {
-      submitter.resetKey()
-    }
-  }
-}
-
 watch(rejectReason, () => {
   if (!rejectSubmit.isSubmitting.value) rejectSubmit.resetKey()
 })
@@ -397,7 +384,6 @@ function addMaterial(): void {
     material_name: '',
     quantity: 1,
     unit: 'PCS',
-    unit_price: null,
   })
 }
 
@@ -496,10 +482,6 @@ async function handleComplete(): Promise<void> {
             material_name: mat.material_name.trim(),
             quantity: Number(mat.quantity),
             unit: mat.unit,
-            unit_price:
-              mat.unit_price !== null && Number.isFinite(mat.unit_price)
-                ? Number(mat.unit_price)
-                : null,
           })),
         },
         key,
@@ -508,7 +490,7 @@ async function handleComplete(): Promise<void> {
     )
 
     await refreshAfterAction()
-    const updatedDispatch = res.dispatch ?? res.dispatcher
+    const updatedDispatch = res.dispatch
     actionSuccessMessage.value = `维修完工已提交（派工状态：${updatedDispatch?.status ?? 'COMPLETED'}，工单状态：${res.ticket.status}）`
   } catch (err: unknown) {
     if (isApiError(err) && err.error.code === 'ELECTRICAL_SAFETY_CHECK_REQUIRED') {
