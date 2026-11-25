@@ -377,13 +377,26 @@ curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="/root/autodl-tm
      - `val`/`test` 严禁混入合成增强样本。
 
 1. **执行标准清洗与防泄漏切分（必须在训练前运行，修复坏 `D1/data.yaml`）**：
+   > **当前生产训练集为 `merged_v7`（`nc=3`，`occluded` 弃用）**，`merged_v5`（`nc=4`，含误标白天 `on` 帧）与 `merged_v6`（`nc=4`，贪心切分）仅作存档对照。`merged_v7` 由 `dataset_prep.py` 8 源合并 + 四层清洗（`mean_v>100` 白天误标剔除、`occluded` 自证模型改标、Roboflow pHash 去重、组防泄漏切分）生成：
    ```bash
    ssh tomori-gpu "source /root/autodl-tmp/tomori/env.sh && cd /root/autodl-tmp/tomori/repo && \
      /root/.local/bin/uv run --no-sync /root/autodl-tmp/tomori/repo/src/tomori/vision/dataset_prep.py \
        --source d1=/root/autodl-tmp/tomori/datasets/d1_lamp_state \
-       --output-dir /root/autodl-tmp/tomori/datasets/prepared_v1 \
-       --phash-threshold 6 --seed 42"
+       --source d3=/root/autodl-tmp/tomori/datasets/d3_streetlamppole \
+       --source \"d4=/root/autodl-tmp/tomori/datasets/d4_damaged_lights|preaug=1,rfmode=phash\" \
+       --source \"ext_pwd_s6=/root/autodl-tmp/tomori/datasets/ext_pwd_s6|map=DAMAGED-STREET-LIGHT:2\" \
+       --source \"ext_pwd_s9=/root/autodl-tmp/tomori/datasets/ext_pwd_s9|map=DAMAGED-STREET-LIGHT:2\" \
+       --source \"ext_pwd_s1=/root/autodl-tmp/tomori/datasets/ext_pwd_s1|map=DAMAGED-STREET-LIGHT:2\" \
+       --source \"ext_prj_n_8=/root/autodl-tmp/tomori/datasets/ext_prj_n_8|map=DAMAGED-STREET-LIGHT:2\" \
+       --source \"ext_infras_broken=/root/autodl-tmp/tomori/datasets/ext_infras_broken|splits=valid;test,map=broken-streetlamp:2\" \
+       --output-dir /root/autodl-tmp/tomori/datasets/merged_v7 \
+       --train-ratio 0.8 --val-ratio 0.1 --test-ratio 0.1 \
+       --clean-day-mean-v-max 100.0 \
+       --clean-occluded-model /root/autodl-tmp/tomori/runs/streetlight_v1/weights/best.pt \
+       --drop-occluded"
    ```
+   > **`merged_v7` 清洗实测（`task-166`）**：`day_dropped_images=3,088`（`d1` 2,750 / `d4` 239 / `d3` 99，`mean_v>100` 且全 `on` 帧剔除）、`day_dropped_boxes_by_cls={'0': 8,212}`、`occluded_relabeled_on=39`（自证模型 `39` 张 `occluded→on` 改标）、`occluded_deleted=188`、`empty_frames_dropped=235`；`leakage_checks` **12 重叠检查 + 1 预增广计数 = 13 项泄漏检查全 `0`**（`video_id`/`rf_stem`/`phash_cluster`/`content_sha256` × `train`/`val`/`test` + `val_test_preaugmented_count`）；
+   > `data.yaml`：`nc: 3`，`names=[streetlight_on, streetlight_off, streetlight_damaged]`；`splits`：`train 5,570 / val 846 / test 567`（`8:1:1`，`on/off/damaged` 各 split 全非零）；`occluded=0`。
    同步自采/预处理数据时可用 `rsync -avz --progress --partial ./vision/datasets/ tomori-gpu:/root/autodl-tmp/tomori/datasets/`（禁止通过 git 传数据集），并确认 `data.yaml` 指向 `/root/autodl-tmp/tomori/datasets/...`。
 
 2. **底模下载（官方 `yolo26s.pt`，精确 `20,422,725` B）**：
@@ -402,35 +415,39 @@ curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="/root/autodl-tm
    cd /root/autodl-tmp/tomori/repo
    # 可选：先无 GPU 干跑校验数据 YAML 与参数护栏
    /root/.local/bin/uv run --no-sync /root/autodl-tmp/tomori/repo/src/tomori/vision/trainer.py \
-     --data /root/autodl-tmp/tomori/datasets/prepared_v1/data.yaml \
-     --model /root/autodl-tmp/tomori/weights/yolo26s.pt \
-     --dry-run
-
-   # 正式训练 + 双头离线测试 + best_e2e.onnx 导出 + SHA256SUMS（imgsz=1280, epochs=500, patience=20, batch=<实测值>）
-   /root/.local/bin/uv run --no-sync /root/autodl-tmp/tomori/repo/src/tomori/vision/trainer.py \
-     --data /root/autodl-tmp/tomori/datasets/prepared_v1/data.yaml \
+     --data /root/autodl-tmp/tomori/datasets/merged_v7/data.yaml \
      --model /root/autodl-tmp/tomori/weights/yolo26s.pt \
      --project /root/autodl-tmp/tomori/runs \
-     --name streetlight_v1 \
-     --imgsz 1280 --epochs 500 --patience 20 --batch <实测值> \
-     2>&1 | tee /root/autodl-tmp/tomori/runs/train_streetlight_v1.log
+     --name streetlight_v3 \
+     --dry-run
+
+   # 正式训练 + 双头离线测试 + best_e2e.onnx 导出 + SHA256SUMS（imgsz=1280, epochs=500, patience=20, batch=24, --mosaic-polish-epochs 20）
+   /root/.local/bin/uv run --no-sync /root/autodl-tmp/tomori/repo/src/tomori/vision/trainer.py \
+     --data /root/autodl-tmp/tomori/datasets/merged_v7/data.yaml \
+     --model /root/autodl-tmp/tomori/weights/yolo26s.pt \
+     --project /root/autodl-tmp/tomori/runs --name streetlight_v3 \
+     --model-version yolo26s-streetlight-v3.0 \
+     --imgsz 1280 --epochs 500 --patience 20 --batch 24 \
+     --flipud 0.0 --hsv-v 0.25 --hsv-s 0.4 --device 0 --seed 42 \
+     --mosaic-polish-epochs 20 \
+     2>&1 | tee /root/autodl-tmp/tomori/runs/logs/streetlight_v3_train.log
    ```
    等效底层 Ultralytics 参数（参考 `docs/TRAIN.md` §3；`--batch` 与上面同值）：
    ```bash
    /root/.local/bin/uv run --no-sync yolo train \
      model=/root/autodl-tmp/tomori/weights/yolo26s.pt \
-     data=/root/autodl-tmp/tomori/datasets/prepared_v1/data.yaml \
+     data=/root/autodl-tmp/tomori/datasets/merged_v7/data.yaml \
      epochs=500 \
      patience=20 \
      imgsz=1280 \
-     batch=<实测值> \
+     batch=24 \
      device=0 \
      amp=True \
      flipud=0.0 \
      hsv_v=0.25 \
      hsv_s=0.4 \
      project=/root/autodl-tmp/tomori/runs \
-     name=streetlight_v1
+     name=streetlight_v3
    ```
    > **增强参数说明（防昼夜洗白，`docs/DESIGN.md` §5.3）**：`ultralytics==8.4.216` `cfg/default.yaml` 默认 `hsv_s=0.7`、`hsv_v=0.4`，本项目必须显式压低为 `flipud=0.0`、`hsv_v=0.25`、`hsv_s=0.4`，避免把夜间 `streetlight_off` 洗白为发光状态或上下颠倒路灯拓扑。
    > **只用 `yolo26s.pt` 一个档位**（用户 `D-06`）。`n`/`m`/`l`/`x` 一律不使用；需要更强表达力时通过 `imgsz` 与数据增强解决，**不换 scale**（§6.4 末注）。
@@ -438,14 +455,14 @@ curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="/root/autodl-tm
    > **`imgsz` 必须与 `.env` 的 `YOLO_IMG_SIZE` 完全一致（当前 `1280`）**：训练尺寸 → `export(..., imgsz=1280, nms=False, dynamic=False)` → `.env` → 推理端四者必须同值，否则 ONNX 图内固化的输入尺寸与推理传入尺寸不符，首次推理即张量形状报错（`docs/DESIGN.md` §5.3）。
    > **`batch` 现在为必填固定值（AutoBatch 已删除，`--batch >=1` 校验）**：
    > - 由 `trainer.py` 顶部 `_DEFAULTS` 常量区集中管理超参；`batch` 须在 `--batch` CLI 显式传入实测安全值（历史 AutoBatch `batch=-1` 与 `13→8` 探测故事已废弃）。
-   > - **当前 `RTX 4080 SUPER`（`32760 MiB`）实测峰值表（`task-74` detached 0.5s `nvidia-smi` 采样，全管线含 ONNX 导出口径，`imgsz=1280`、`epochs=1`、`merged_v5`）**：
+   > - **当前 `RTX 4080 SUPER`（`32760 MiB`）实测峰值表（`task-74` detached 0.5s `nvidia-smi` 采样，`imgsz=1280`；`merged_v7`/`nc=3`/`streetlight_v3` 实跑口径）**：
    >   | `--batch` | 实测峰值显存 | 占 32,760 MiB | 余量 | 判定 |
    >   |---:|---:|---:|---:|---|
    >   | `32` | **32,214 MiB** | **98.3%** | ~546 MiB | ❌ 贴顶，长程训练易因碎片/验证批 OOM |
-   >   | `24` | **30,720 MiB** | **93.8%** | ~2,040 MiB | ⚠️ 挤 |
-   >   | `16` | **20,708 MiB** | **63.2%** | ~12,052 MiB | ✅ 当前安全档 |
-   >   > 出处：`.team/notes/dev-ops/logs/task74-probe-b32.log` 与远端 `probe_{b16,b24,b32}_status.txt`（`exit=0` 全通过）。`batch=32` 虽物理可跑完，但不符合 `<~29GB` 的安全约束；若用户要求等效 `≥32`，用 `batch=16` + 梯度累积 `×2` 达到等效 32 而不是硬顶显存。
-   > - **`epochs=500 --patience 20`** 为项目定案参数（交由 `EarlyStopping` 监控 `mAP50-95` 控制收敛；若于第 `491` 轮前早停导致 `close_mosaic=10` 未触发，可用 `--mosaic-polish-epochs 10` 追加两阶段无 Mosaic 短微调，详见 `docs/TRAIN.md` §3.1）。
+   >   | **`24`** | **30,850 MiB** | **94.2%** | ~1,910 MiB | ✅ **当前采用（`streetlight_v3` 实跑，epoch 70 早停）** |
+   >   | `16` | **20,708 MiB** | **63.2%** | ~12,052 MiB | ✅ 保守档 |
+   >   > 出处：`.team/notes/dev-ops/logs/task74-probe-b32.log`、远端 `probe_{b16,b24,b32}_status.txt`（`exit=0` 全通过）与 `streetlight_v3` `nvidia-smi` 实跑峰值 `30,850 MiB`。`batch=32` 虽物理可跑完但贴天花板；`batch=24` 为「不贴顶的最大实测档」。若用户要求等效 `≥32`，用 `batch=16` + 梯度累积 `×2` 达到等效 32 而不是硬顶显存。
+   > - **`epochs=500 --patience 20`** 为项目定案参数（交由 `EarlyStopping` 监控 `mAP50-95` 控制收敛；`streetlight_v3` 实测 `epoch 70` 早停，峰 `epoch 50`）。若于第 `491` 轮前早停导致 `close_mosaic=10` 未触发，可用 `--mosaic-polish-epochs 20` 追加两阶段无 Mosaic 短微调（`cos_lr` 重复 kwarg bug 已修复 `2ab866f`，详见 `docs/TRAIN.md` §3.1）。
    > - 小目标（如远景灯头）需要更高分辨率时，通过**提高 `imgsz`、调整数据增强**等手段处理，**不换 scale**（用户已明确只用 `yolo26s`，故 `m`/`l`/`x` 不在阶段二选项内）。
    >
    > ⚠️ **两条易错点（无出处说法已删除）**：
@@ -454,18 +471,29 @@ curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="/root/autodl-tm
    >
    > **写作纪律**：本段落曾把「项目工程初值」与「官方结论」混在一句「依据官方指南」之下，导致读者连带误信。**每条断言各自标出处，不共享段落级出处。**
 
-4. **导出端到端无 NMS ONNX（`best_e2e.onnx`，`docs/DESIGN.md` §5.3；`src/tomori/vision/trainer.py` 在训练后已自动完成本步，仅当手工补导出时执行）**：
+4. **导出端到端无 NMS ONNX（`best_e2e.onnx`，`docs/DESIGN.md` §5.3；`src/tomori/vision/trainer.py` 在训练后已自动完成本步，仅当手工补导出或 `--mosaic-polish-epochs` 崩溃后补链时执行）**：
    ```bash
+   # 方式一：`trainer.py --export-only`（推荐；不重训、直接跑双头 val/test 评估 + ONNX 导出 + 形状校验 + metrics.json + SHA256SUMS）
+   /root/.local/bin/uv run --no-sync /root/autodl-tmp/tomori/repo/src/tomori/vision/trainer.py \
+     --data /root/autodl-tmp/tomori/datasets/merged_v7/data.yaml \
+     --model /root/autodl-tmp/tomori/weights/yolo26s.pt \
+     --project /root/autodl-tmp/tomori/runs --name streetlight_v3 \
+     --model-version yolo26s-streetlight-v3.0 \
+     --imgsz 1280 --epochs 500 --patience 20 --batch 24 \
+     --flipud 0.0 --hsv-v 0.25 --hsv-s 0.4 --device 0 --seed 42 \
+     --export-only --weights /root/autodl-tmp/tomori/runs/streetlight_v3/weights/best.pt
+
+   # 方式二：手工 yolo export + 改名（等价路径，不写 metrics.json/SHA256SUMS）
    /root/.local/bin/uv run --no-sync yolo export \
-     model=/root/autodl-tmp/tomori/runs/streetlight_v1/weights/best.pt \
+     model=/root/autodl-tmp/tomori/runs/streetlight_v3/weights/best.pt \
      format=onnx \
      imgsz=1280 \
      nms=False \
      dynamic=False
    # Ultralytics 默认输出 weights/best.onnx（见 https://docs.ultralytics.com/modes/export/），
    # 显式留存为约定文件名 best_e2e.onnx 供本地 onnxruntime.InferenceSession 加载：
-   cp /root/autodl-tmp/tomori/runs/streetlight_v1/weights/best.onnx \
-      /root/autodl-tmp/tomori/runs/streetlight_v1/weights/best_e2e.onnx
+   cp /root/autodl-tmp/tomori/runs/streetlight_v3/weights/best.onnx \
+      /root/autodl-tmp/tomori/runs/streetlight_v3/weights/best_e2e.onnx
    ```
    > 导出前确保已设置 `YOLO_AUTOINSTALL=False`；如缺少 `onnx`/`onnxslim`，Ultralytics 会显式报错提示缺少依赖而不会静默装包（`https://docs.ultralytics.com/modes/export/`）。不硬编码 `opset=17`（沿用 Ultralytics 官方默认 opset 18，`docs/DESIGN.md` §5.3），回传本地统一扁平放置于 `./vision/weights/{best.pt,best_e2e.onnx}`（校验张量形状 `[1, 3, 1280, 1280] -> [1, 300, 6]`）。
 
@@ -473,24 +501,24 @@ curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="/root/autodl-tm
 
 训练与导出结束后，严禁仅凭口头汇报或手工改名回传模型，必须执行哈希校验与指标留证：
 
-1. **远端生成校验文件与确认产物清单**：
+1. **远端生成校验文件与确认产物清单**（`streetlight_v3` 当前生产 run）：
    ```bash
-   ssh tomori-gpu "cd /root/autodl-tmp/tomori/runs/streetlight_v1 && sha256sum weights/best.pt weights/best_e2e.onnx weights/last.pt results.csv args.yaml metrics.json > SHA256SUMS && cat SHA256SUMS"
+   ssh tomori-gpu "cd /root/autodl-tmp/tomori/runs/streetlight_v3 && sha256sum weights/best.pt weights/best_e2e.onnx weights/last.pt results.csv args.yaml metrics.json > SHA256SUMS && cat SHA256SUMS"
    ```
 2. **回传权重与评估指标至本地（权重放本地 ignored 目录 `./vision/weights/`）**：
    ```bash
-   mkdir -p ./vision/weights ./vision/reports/streetlight_v1
-   rsync -avz --progress tomori-gpu:/root/autodl-tmp/tomori/runs/streetlight_v1/weights/best.pt ./vision/weights/best.pt
-   rsync -avz --progress tomori-gpu:/root/autodl-tmp/tomori/runs/streetlight_v1/weights/best_e2e.onnx ./vision/weights/best_e2e.onnx
-   rsync -avz --progress tomori-gpu:/root/autodl-tmp/tomori/runs/streetlight_v1/SHA256SUMS ./vision/reports/streetlight_v1/
-   rsync -avz --progress tomori-gpu:/root/autodl-tmp/tomori/runs/streetlight_v1/results.csv ./vision/reports/streetlight_v1/
-   rsync -avz --progress tomori-gpu:/root/autodl-tmp/tomori/runs/streetlight_v1/args.yaml ./vision/reports/streetlight_v1/
-   rsync -avz --progress tomori-gpu:/root/autodl-tmp/tomori/runs/streetlight_v1/metrics.json ./vision/reports/streetlight_v1/
+   mkdir -p ./vision/weights ./vision/reports/streetlight_v3
+   rsync -avz --progress tomori-gpu:/root/autodl-tmp/tomori/runs/streetlight_v3/weights/best.pt ./vision/weights/best.pt
+   rsync -avz --progress tomori-gpu:/root/autodl-tmp/tomori/runs/streetlight_v3/weights/best_e2e.onnx ./vision/weights/best_e2e.onnx
+   rsync -avz --progress tomori-gpu:/root/autodl-tmp/tomori/runs/streetlight_v3/SHA256SUMS ./vision/reports/streetlight_v3/
+   rsync -avz --progress tomori-gpu:/root/autodl-tmp/tomori/runs/streetlight_v3/results.csv ./vision/reports/streetlight_v3/
+   rsync -avz --progress tomori-gpu:/root/autodl-tmp/tomori/runs/streetlight_v3/args.yaml ./vision/reports/streetlight_v3/
+   rsync -avz --progress tomori-gpu:/root/autodl-tmp/tomori/runs/streetlight_v3/metrics.json ./vision/reports/streetlight_v3/
    ```
 3. **权重回传与完整性校验**（本地**只做校验与推理验证，不做训练/开发**）：
    ```bash
    sha256sum ./vision/weights/best.pt ./vision/weights/best_e2e.onnx
-   # 与 ./vision/reports/streetlight_v1/SHA256SUMS 中 weights/best.pt 与 weights/best_e2e.onnx 的哈希逐字符比对
+   # 与 ./vision/reports/streetlight_v3/SHA256SUMS 中 weights/best.pt 与 weights/best_e2e.onnx 的哈希逐字符比对（streetlight_v3 实测 6/6 全 OK）
    ```
    确认本地 `.env` 中 `YOLO_WEIGHTS_PATH=./vision/weights/best.pt`（与同目录 `best_e2e.onnx`）及 `YOLO_AUTOINSTALL=False` 已就绪，并在本地通过 `onnxruntime.InferenceSession` 执行推理验证（`CPUExecutionProvider` 或可用 CUDA）确认输入/输出张量、类别映射与阈值符合 `docs/DESIGN.md` §5.1–§5.3 契约后再交付联调。
 
@@ -501,7 +529,7 @@ curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="/root/autodl-tm
 1. **`imgsz` 一致性门禁（硬性）**：核对 `metrics.json` 的 `imgsz` 字段与 `.env` 的 `YOLO_IMG_SIZE` **完全相等**（当前均应为 **`1280`**）。
    ```bash
    # 回传的 metrics.json 中记录的训练/导出尺寸
-   rg -n '"imgsz"' ./vision/reports/streetlight_v1/metrics.json
+   rg -n '"imgsz"' ./vision/reports/streetlight_v3/metrics.json
    # 拟用于推理的环境变量取值
    rg -n '^YOLO_IMG_SIZE=' .env
    ```
@@ -509,7 +537,13 @@ curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="/root/autodl-tm
 2. **`strict_custom` 模式上线前检查项**：若线上要求「必须加载自定义权重、绝不允许基线兜底」，将 `.env` 置为 `YOLO_INFERENCE_MODE=strict_custom`（且保留 `YOLO_AUTOINSTALL=False`），并在上线前确认以下全部成立：
    - [ ] `.env` 中 `YOLO_INFERENCE_MODE=strict_custom`（生产环境不得为 `auto`）。
    - [ ] `YOLO_WEIGHTS_PATH`（及 `best_e2e.onnx`）指向的权重文件**确实存在**且 `sha256sum -c SHA256SUMS` 通过。
-   - [ ] 权重启用门禁其余项全部通过：ONNX 输入 `(1, 3, YOLO_IMG_SIZE, YOLO_IMG_SIZE)`、输出 `(1, 300, 6)`（`nms=False` 端到端头）；`metrics.json` 类别列表顺序与代码枚举（`streetlight_on`/`streetlight_off`/`streetlight_damaged`/`streetlight_occluded`）一致；已知真值样例图推理验证返回 ≥1 个候选。
+   - [ ] 权重启用门禁其余项全部通过：ONNX 输入 `(1, 3, YOLO_IMG_SIZE, YOLO_IMG_SIZE)`、输出 `(1, 300, 6)`（`nms=False` 端到端头）；`metrics.json` `names` 类别列表顺序与 `merged_v7`/`nc=3` 一致（`streetlight_on`/`streetlight_off`/`streetlight_damaged`，`occluded` 已弃用）；已知真值样例图推理验证返回 ≥1 个候选。
    - [ ] **反向验证（必须实测）**：临时把 `YOLO_WEIGHTS_PATH` 指向一个不存在的路径并重启，确认健康检查/启动日志**显式报未就绪**且视觉接口返回 **`503 VISION_DISABLED`**（`docs/API.md` §3.4、`docs/DESIGN.md` §5.2），而不是静默改用 `YOLO_FALLBACK_MODEL` 继续对外服务；验证后恢复正确路径。
    - [ ] 健康检查/启动日志在失败时打印**具体失败环节**（`sha256` 不匹配 / 输出形状不符 / 类别列表不符 / 推理验证空结果 / 权重缺失），而非笼统的 "failed to load model"。
+
+#### `streetlight_v3` 实测验收记录（`task-166`，`nc=3`/`merged_v7`/`batch=24`/`epoch 70`）
+- `metrics.json`：`names` **3 项**（`streetlight_on`/`streetlight_off`/`streetlight_damaged`）、`head_contract`（`one2one_end2e`/`deploy_nms=false`）、`train_config` `25` 键（含 `batch: 24`/`mosaic_polish_epochs: 20`）、`early_stopping_diagnostics`（`export-only` 补链下为空 `{}`——如实）、`onnx_verification`（`[1,3,1280,1280] → [1,300,6]`、`end2end`/`nms=False`、opset 18）；
+- `sha256sum -c`：`best.pt`/`best_e2e.onnx`/`last.pt`/`results.csv`/`args.yaml`/`metrics.json` **6/6 全 `OK`**；
+- `client.py` `D-30` 夜间亮灯（`10_01751`/`10_01606`/`10_01453`）：`scene_lighting=night`，6 候选全 `streetlight_on → NORMAL_LIT / is_fault_candidate=false / candidate_fault_type=null / severity=none`；
+- `nc=3` `damaged` 类（`merged_v7/test` `d3_*`）：`streetlight_damaged → FIXTURE_DAMAGED / is_fault_candidate=true / severity=P2`（`d3_008436` 1 候选 `conf=0.344`、`d3_008452` 2 候选 `conf=0.315/0.267`）。
 3. **`auto` 模式的诚实标注要求**：`YOLO_INFERENCE_MODE=auto` 且自定义权重缺失时允许回退到 `YOLO_FALLBACK_MODEL`（或内置 `baseline_pretrained_opencv`），但回退期间响应必须如实标注 `ai_is_baseline_mode=true` 且 `inference_mode=baseline_pretrained_opencv`，融合置信度受后端 `fault_evidences` 表约束 **`ck_fault_evidences_baseline_confidence_cap`**（`docs/DESIGN.md` §4.3 / §5.1）限制；夜间正常亮灯 `streetlight_on` 按 `D-30` 回传参照框且 `is_fault_candidate=false`；严禁以基线权重冒充定制模型对外服务。
