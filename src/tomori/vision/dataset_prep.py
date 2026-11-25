@@ -202,6 +202,11 @@ class DatasetPrepConfig:
     seed: int = 42
     link_mode: str = "hardlink"  # "hardlink" | "copy" | "symlink"
     allow_small_groups: bool = False
+    # merged_v6 清洗开关（`task-161` 实测依据；默认全关保持 merged_v5 兼容）
+    clean_day_mean_v_max: float = 0.0  # >0：剔除「`mean_v` 超阈值且全 `on`」白天帧
+    clean_occluded_model: Path | None = (
+        None  # `best.pt`：`occluded` 自证重标（`conf>=0.65` 判 `on`）
+    )
 
     def __post_init__(self) -> None:
         if not self.sources:
@@ -1140,6 +1145,115 @@ def _deterministic_hash(seed: int, key: str) -> str:
     return hashlib.sha256(f"{seed}:{key}".encode()).hexdigest()
 
 
+def _clean_samples(
+    samples: list[_ImageSample],
+    *,
+    cfg: DatasetPrepConfig,
+) -> tuple[list[_ImageSample], dict[str, Any]]:
+    """merged_v6 清洗管线：夜间过滤 + `occluded` 自证重标 + `damaged` 子集过滤.
+
+    依据 `task-161` 实测：`occluded` 类 `~95%` 错标（楼窗/高架灯/树叶/杆上小物），
+    自证重标仅 `~22%` 可归向；`damaged` 混「杆体磨损」与「灯头损坏」；
+    `off`/`on` 白天帧混入为 `off` `P≈44%` 与 `on` 漏标的根因。零人工标注。
+
+    Args:
+        samples: `_cluster_and_dedupe_phash` 产出的全量样本。
+        cfg: `DatasetPrepConfig`（`clean_*` 开关）。
+
+    Returns:
+        `(cleaned_samples, clean_stats)`：`cleaned_samples` 为夜间过滤 + 类清洗后的样本
+        （`s.boxes` 已原地更新）；`clean_stats` 为清洗漏斗计数（供 `prep_manifest.json`）。
+    """
+    stats: dict[str, Any] = {
+        "day_dropped_images": 0,
+        "day_dropped_by_source": Counter(),
+        "day_dropped_boxes_by_cls": Counter(),
+        "occluded_relabeled_on": 0,
+        "occluded_deleted": 0,
+        "empty_frames_dropped": 0,
+    }
+    cv2: Any = __import__("cv2")
+
+    # `occluded` 自证重标模型（`best.pt`，`conf>=0.65` 判 `on` 则 `3`→`0`）
+    occl_model = None
+    if cfg.clean_occluded_model is not None:
+        os.environ["YOLO_AUTOINSTALL"] = "False"
+        ultralytics_mod: Any = __import__("ultralytics")
+        occl_model = ultralytics_mod.YOLO(str(cfg.clean_occluded_model))
+
+    def _n2x(c: Sequence[float]) -> tuple[float, float, float, float]:
+        xc, yc, w, h = c
+        return (xc - w / 2, yc - h / 2, xc + w / 2, yc + h / 2)
+
+    def _iou(a: tuple[float, ...], b: tuple[float, ...]) -> float:
+        ix1, iy1 = max(a[0], b[0]), max(a[1], b[1])
+        ix2, iy2 = min(a[2], b[2]), min(a[3], b[3])
+        iw, ih = max(0.0, ix2 - ix1), max(0.0, iy2 - iy1)
+        inter = iw * ih
+        if inter <= 0:
+            return 0.0
+        return inter / ((a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter)
+
+    kept: list[_ImageSample] = []
+    for s in samples:
+        # 夜间过滤：`mean_v` 超过阈值的帧整帧剔除（`off`/`on` 白天混入为污染根因）
+        img = cv2.imread(str(s.image_path))
+        if img is None:
+            continue
+        if cfg.clean_day_mean_v_max > 0.0:
+            # 夜滤：仅删「`mean_v` 超阈值 **且** 全为 `on` 框」的帧——白天亮招牌误标的 `on` 该删，
+            # 但白天含 `off`/`damaged`/`occluded` 的帧是合法样本（灭灯外观/损坏/遮挡不因白天失效）
+            v = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)[:, :, 2].astype(float)
+            if float(v.mean()) > cfg.clean_day_mean_v_max and all(cid == 0 for cid, *_ in s.boxes):
+                stats["day_dropped_images"] += 1
+                stats["day_dropped_by_source"][s.source_name] += 1
+                for cid, *_ in s.boxes:
+                    stats["day_dropped_boxes_by_cls"][cid] += 1
+                continue
+
+        occl_results = None
+        new_boxes: list[tuple[int, float, float, float, float]] = []
+        for cid, xc, yc, bw, bh in s.boxes:
+            if cid == 3 and occl_model is not None:
+                # `occluded` 自证重标：框区判 `on`(cid=0) 且 `conf>=0.65` → `3`→`0`，否则删框
+                if occl_results is None:
+                    occl_results = occl_model.predict(
+                        str(s.image_path),
+                        imgsz=1280,
+                        conf=0.65,
+                        iou=0.7,
+                        verbose=False,
+                    )[0]
+                relabeled = False
+                if occl_results.boxes is not None:
+                    gb = _n2x((xc, yc, bw, bh))
+                    for b in occl_results.boxes:
+                        # `conf=0.65` 已做推理阈值过滤，`pcid==0` 即满足「`conf>=0.65` 判 `on`」
+                        if (
+                            int(b.cls[0]) == 0
+                            and _iou(gb, _n2x(tuple(map(float, b.xywhn[0].tolist())))) >= 0.1
+                        ):
+                            relabeled = True
+                            break
+                if relabeled:
+                    new_boxes.append((0, xc, yc, bw, bh))
+                    stats["occluded_relabeled_on"] += 1
+                else:
+                    stats["occluded_deleted"] += 1
+                continue
+            # `damaged` 全保留（`task-161` 已证「杆体 vs 灯头」语义混杂但不删，
+            # 由 `D-30` 映射层按「设施损坏」语义处理）
+            new_boxes.append((cid, xc, yc, bw, bh))
+
+        if new_boxes:
+            s.boxes = new_boxes
+            kept.append(s)
+        else:
+            stats["empty_frames_dropped"] += 1
+
+    return kept, stats
+
+
 def _assign_group_splits(
     samples: list[_ImageSample],
     *,
@@ -1670,6 +1784,10 @@ def prepare_dataset(cfg: DatasetPrepConfig) -> PrepResult:
         dedupe=cfg.dedupe_phash,
         stats_by_source=stats_by_source,
     )
+    # merged_v6 清洗管线：夜滤（`mean_v` > `clean_day_mean_v_max` 且全 `on` 才剔帧）+
+    # `occluded` 自证重标（`best.pt` 判 `on` `conf>=0.65` → 改 `3`→`0`，其余删框）；
+    # `damaged` 全保留（`D-30` 按「设施损坏」语义）；全部基于现有数据、零人工标注
+    kept_samples, clean_stats = _clean_samples(kept_samples, cfg=cfg)
     for s in kept_samples:
         stats_by_source[s.source_name].kept_images += 1
         if s.is_preaugmented:
@@ -1882,6 +2000,7 @@ def prepare_dataset(cfg: DatasetPrepConfig) -> PrepResult:
         "split_assignment": split_info["split_assignment"],
         "split_objective": split_info["objective"],
         "leakage_checks": leakage_checks,
+        "clean_stats": clean_stats,
     }
     manifest_path = out_dir / "prep_manifest.json"
     manifest_path.write_text(
@@ -2015,6 +2134,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         default="hardlink",
     )
     parser.add_argument("--allow-small-groups", action="store_true")
+    # merged_v6 清洗开关（`task-161` 实测依据；默认全关保持 merged_v5 兼容）
+    parser.add_argument(
+        "--clean-day-mean-v-max",
+        type=float,
+        default=0.0,
+        help=">0 时剔除「`mean_v` 超阈值且全为 `on`」的白天帧",
+    )
+    parser.add_argument(
+        "--clean-occluded-model",
+        type=Path,
+        default=None,
+        help="`best.pt`：`occluded` 自证重标（`conf>=0.65` 判 `on` → `3`→`0`）",
+    )
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     specs = tuple(_parse_source_arg(item) for item in args.source)
@@ -2031,6 +2163,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         seed=args.seed,
         link_mode=args.link_mode,
         allow_small_groups=args.allow_small_groups,
+        clean_day_mean_v_max=args.clean_day_mean_v_max,
+        clean_occluded_model=args.clean_occluded_model,
     )
     res = prepare_dataset(cfg)
     print(
