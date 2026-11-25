@@ -917,3 +917,102 @@ def test_clean_damaged_lamp_filter_drops_nonlamp_boxes(tmp_path: Path, monkeypat
         if ln.strip()
     ]
     assert any(ln.startswith("2 ") for ln in s1_lines), out_labels
+
+
+class _FakeOcclModel:
+    """`occluded` 自证重标伪模型：按 stem 返回检测框并记录 `predict` 实参。
+
+    `conf`/`iou` 过滤由生产代码委托给 `predict(conf=0.65, iou=0.7)` 参数
+    （真实 `YOLO.predict` 内部按 `conf` 阈值过滤）——伪模型把实参存进 `self.calls`
+    供断言校验，不再二次判 `conf`（与 `core.py` 的委托语义一致）。
+    """
+
+    def __init__(self, by_stem: dict[str, list[list[float]]]) -> None:
+        self._by_stem = by_stem
+        self.calls: list[dict[str, Any]] = []
+
+    def predict(
+        self, path: str, *, imgsz: int, conf: float, iou: float, verbose: bool
+    ) -> list[_FakeLampResult]:
+        self.calls.append({"path": path, "imgsz": imgsz, "conf": conf, "iou": iou})
+        stem = Path(path).stem
+        return [_FakeLampResult([_FakeLampBox(0, b) for b in self._by_stem.get(stem, [])])]
+
+
+def test_clean_occluded_model_relabels_on(tmp_path: Path, monkeypatch: Any) -> None:
+    """`clean_occluded_model`：`occluded` GT `3→0` 自证重标——`cls==0` 检测框
+    `IoU>=0.1` 命中灯具则改判 `on`（`occluded_relabeled_on`），否则删（`occluded_deleted`）；
+    判据面：`predict` 按 `conf=0.65`/`iou=0.7` 实参调用（`conf` 过滤委托给推理阈值）。"""
+    src = tmp_path / "occl_src"
+    specs = [
+        # s0：仅 `cid==3` 框 —— 伪模型无检测输出（等价于 `conf<0.65` 全部被滤）→ 删框、空帧丢
+        ("train", "s0", "3 0.9 0.9 0.1 0.1\n"),
+        # s1：仅 `cid==3` 框 —— `cls==0` 灯具框 (0.5,0.5,0.3,0.3) `IoU≈0.44` → `3→0` 改判
+        ("train", "s1", "3 0.5 0.5 0.2 0.2\n"),
+        # s2：仅 `cid==3` 框 —— `cls==0` 框 (0.95,0.95,0.05,0.05) `IoU<0.1` → 删框、空帧丢
+        ("train", "s2", "3 0.1 0.1 0.1 0.1\n"),
+    ]
+    _seed_minimal_source(
+        src,
+        specs=specs,
+        yaml_names={
+            0: "streetlight_on",
+            1: "streetlight_off",
+            2: "streetlight_damaged",
+            3: "streetlight_occluded",
+        },
+    )
+
+    model = _FakeOcclModel(
+        {
+            "s1": [[0.5, 0.5, 0.3, 0.3]],
+            "s2": [[0.95, 0.95, 0.05, 0.05]],
+        }
+    )
+    import types
+
+    fake_mod = types.ModuleType("ultralytics")
+    fake_mod.YOLO = lambda _p: model  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "ultralytics", fake_mod)
+    monkeypatch.setenv("YOLO_AUTOINSTALL", "False")
+
+    out = tmp_path / "out_occl"
+    res = prepare_dataset(
+        DatasetPrepConfig(
+            sources=(DatasetSourceSpec(name="occl", root_dir=src),),
+            output_dir=out,
+            dedupe_phash=False,
+            clean_occluded_model=tmp_path / "fake_best.pt",
+            allow_small_groups=True,
+        )
+    )
+    manifest = json.loads(res.manifest_path.read_text(encoding="utf-8"))
+    cstats = manifest["clean_stats"]
+
+    # 1) 判据面：`predict` 按 `conf=0.65`/`iou=0.7`/`imgsz=1280` 实参调用
+    assert len(model.calls) == 3  # s0/s1/s2 各推理一次
+    assert all(c["conf"] == 0.65 and c["iou"] == 0.7 and c["imgsz"] == 1280 for c in model.calls)
+
+    # 2) 计数：s1 重标、 s0/s2 删除、 s0/s2 空帧丢
+    assert cstats["occluded_relabeled_on"] == 1
+    assert cstats["occluded_deleted"] == 2
+    assert cstats["empty_frames_dropped"] == 2
+    assert res.total_kept_images == 1
+
+    # 3) 输出 labels：s0/s2 无文件（整帧丢）；s1 有 `0 ` 行且无 `3 ` 行；全局零 `3 ` 行
+    out_labels = {p.stem: p for p in (out / "labels").rglob("*.txt")}
+    assert not any("s0" in stem for stem in out_labels), out_labels
+    assert not any("s2" in stem for stem in out_labels), out_labels
+    s1_labels = [
+        ln
+        for stem, lbl in out_labels.items()
+        if "s1" in stem
+        for ln in lbl.read_text().splitlines()
+        if ln.strip()
+    ]
+    assert any(ln.startswith("0 ") for ln in s1_labels), s1_labels
+    assert not any(ln.startswith("3 ") for ln in s1_labels), s1_labels
+    for lbl in out_labels.values():
+        assert not any(ln.startswith("3 ") for ln in lbl.read_text().splitlines() if ln.strip()), (
+            lbl
+        )
