@@ -22,7 +22,7 @@
   <rect class="layer" x="470" y="95" width="240" height="60" rx="4"/><text x="590" y="118">schema.sql / migrations 0001-0004</text><text x="590" y="138">17 表 / 76 CHECK / 41 FK / 37 索引 / 6 部分唯一</text>
   <rect class="layer" x="470" y="165" width="240" height="60" rx="4"/><text x="590" y="188">tomori_dev / tomori_test</text><text x="590" y="208">psycopg async（SQLAlchemy 2.0）</text>
   <rect class="box" x="450" y="290" width="280" height="370" rx="8"/><text class="hdr" x="590" y="310">远端训练链 — RTX 4080 SUPER</text>
-  <rect class="layer" x="470" y="325" width="240" height="56" rx="4"/><text x="590" y="348">rsync src → dataset_prep</text><text x="590" y="368">merged_v7（nc=3 清洗）</text>
+  <rect class="layer" x="470" y="325" width="240" height="56" rx="4"/><text x="590" y="348">rsync src → dataset_prep</text><text x="590" y="368">merged_v8（nc=3 清洗）</text>
   <rect class="layer" x="470" y="391" width="240" height="56" rx="4"/><text x="590" y="414">trainer（yolo train）</text><text x="590" y="434">batch=24 / imgsz=1280 / e2e</text>
   <rect class="layer" x="470" y="457" width="240" height="56" rx="4"/><text x="590" y="480">export ONNX + metrics.json</text><text x="590" y="500">SHA256SUMS 生成</text>
   <rect class="layer" x="470" y="523" width="240" height="56" rx="4"/><text x="590" y="546">rsync 回传 + sha256sum -c</text><text x="590" y="566">client.py D-30/damaged 验收</text>

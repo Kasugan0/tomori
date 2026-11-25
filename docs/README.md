@@ -1,6 +1,6 @@
 # `docs/` 文档导航（`#141` 公共照明故障工单系统）
 
-> **阶段二完结**（`origin/main = 50df47e`，`39` 条严格线性全 `G` 签名提交，`43` 条决策收口 `23 ✅ / 20 🟢`）：
+> **阶段二完结**（`origin/main = a0211bc`，`39+` 条严格线性全 `G` 签名提交，`43` 条决策收口 `23 ✅ / 20 🟢`）：
 > `src/backend/tomori/`（`60` 业务端点 + `health`）+ `src/frontend/`（Vue 3 SPA）+ `src/database/`（`schema.sql`/`seed.sql`）+ `streetlight_v3`/`nc=3` 训练完结验收；`118` 单测/集成 + `31` E2E 全绿。
 
 ---
@@ -9,7 +9,7 @@
 
 | 序 | 文档 | 适合 | 内容（全部以 `src/`/`tests/`/`metrics.json`/`prep_manifest.json`/`audits/` 实据为准） |
 |---:|---|---|---|
-| 1 | [`01-案例说明.md`](01-案例说明.md) | 全员 | `#141` 业务背景、`3` 角色/`17` 表/`60` 端点/`YOLO` `nc=3`/`D-30` 参照框、`fault_type`/`severity`/`scope`/`idempotency`/`state_machine`/`whitelist`/`mapping` 术语表 |
+| 1 | [`01-案例说明.md`](01-案例说明.md) | 全员 | `#141` 业务背景、`3` 角色/`17` 表/`60` 端点/`YOLO` `nc=3`（`merged_v8`/`streetlight_v5` 当前部署，`--clean-damaged-lamp-model` `d3` `damaged` 灯头过滤 `176`/`1,247`）/`D-30` 参照框、`fault_type`/`severity`/`scope`/`idempotency`/`state_machine`/`whitelist`/`mapping` 术语表 |
 | 2 | [`02-需求规格说明.md`](02-需求规格说明.md) | 产品/测试/审计 | `3` 角色（`ADMIN`/`INSPECTOR`/`TECHNICIAN`/`scope_authorizations`/`deps.py` `FORBIDDEN_*`）/`FR-01..29`/`UC-01..09`/`N1-N5`/`business_rules` `5` 默认/`grading`/`sla`/`idempotency`/`audit_logs`/非功能需求——`FR` 每条带端点+测试映射 |
 | 3 | [`03-概要设计.md`](03-概要设计.md) | 架构/新成员 | `FastAPI`+`Vue3`+`PG17` 架构、`src/{backend,frontend,database}` 三层布局、`api`/`services`/`models`/`workers`/`vision`/`web`/`tests` 模块划分与依赖红线 |
 | 4 | [`04-详细设计.md`](04-详细设计.md) | 后端/视觉实现者 | `4` 状态机 `29` 态/`36` 规则条目·`47` `(from,to)` 图边/`11` 终态/`0` 死路 + `transition_*`/`upload_ticket_evidences_flow`/`_TERMINAL_TICKET_STATUSES`/`_normalize_raw_class`/`_train_kwargs`/`polish_kwargs`/`_out_names`/`_clean_samples`/`validate_data_yaml`/`_assign_group_splits`/`34` 码/`MANUAL_FALLBACK`/`resubmit_required`/`DEAD_LETTER`/`notifier`/`sla_scanner`——每类/方法带 `src/backend/...:行号` |
@@ -27,4 +27,4 @@
 
 ## 事实一致性原则（`F14`）
 
-本文档每个数字/声明均带**可复现实据**：`src/` 代码坐标（`文件:行号`）、`vision/reports/{streetlight_v1,streetlight_v3}/metrics.json`（`20` 键实测）、`merged_v6/prep_manifest.json`（`clean_stats`/`splits`/`leakage_checks`/`split_objective`/`split_assignment`）、`audits/`（`stage2-final-audit.md`/`requirement-traceability.md`）、`.team/notes/{backend-dev,vision-dev,dev-ops,tester,auditor,git-keeper}/` 实测日志。发现与代码不一致时，以**当前代码与落盘实测**为真相并回填文档。
+本文档每个数字/声明均带**可复现实据**：`src/` 代码坐标（`文件:行号`）、`vision/reports/{streetlight_v1,streetlight_v3,streetlight_v5}/metrics.json`（`20` 键实测）、`merged_v6`/`merged_v8` `prep_manifest.json`（`clean_stats`/`splits`/`leakage_checks`/`split_objective`/`split_assignment`）、`audits/`（`stage2-final-audit.md`/`requirement-traceability.md`）、`.team/notes/{backend-dev,vision-dev,dev-ops,tester,auditor,git-keeper}/` 实测日志。发现与代码不一致时，以**当前代码与落盘实测**为真相并回填文档。

@@ -17,7 +17,7 @@ node "数据库" {
   [PostgreSQL 17.12\nschema.sql\n17 表 / 76 CHECK / 41 FK / 37 索引 / 6 部分唯一\nmigrations/versions/0001..0004]
 }
 node "远端训练链\nRTX 4080 SUPER" {
-  [rsync src → dataset_prep\n(merged_v7 nc=3 清洗)]
+  [rsync src → dataset_prep\n(merged_v8 nc=3 清洗)]
   [trainer(yolo train)\n(batch=24 / imgsz=1280)]
   [export ONNX + metrics + SHA256SUMS]
   [rsync 回传 + client.py 验收]
