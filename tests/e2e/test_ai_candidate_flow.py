@@ -14,9 +14,9 @@ Each AI test creates its own fresh lighting point via `POST /lighting-points` so
 `409 DUPLICATE_ACTIVE_TICKET` guard (per point + fault type) never fires across tests.
 
 NOTE (deviation already reported to Lead): `docs/DESIGN.md:1189` names the fallback anchor
-`vision-fallback-banner`, but `web/src/views/inspection/InspectionReportView.vue:660`
+`vision-fallback-banner`, but `src/frontend/src/views/inspection/InspectionReportView.vue:660`
 implements `inspection-vision-disabled` with `data-code` + `data-fallback-action`.
-`web/src` is the frozen implementation, so the assertions target the real anchor.
+`src/frontend/src` is the frozen implementation, so the assertions target the real anchor.
 """
 
 from __future__ import annotations

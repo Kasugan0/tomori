@@ -1,6 +1,6 @@
 """Responsive E2E: `390x844` (mobile) vs `1280x800` (desktop) layout switching.
 
-`web/src/shared/breakpoints.ts` defines `BP_DESKTOP_MIN = 992`, and `AppShell.vue` mounts
+`src/frontend/src/shared/breakpoints.ts` defines `BP_DESKTOP_MIN = 992`, and `AppShell.vue` mounts
 the desktop sidebar and the mobile tab bar with mutually exclusive `v-if`/`v-else`, so the
 two nav families must never coexist. Horizontal overflow is measured from real
 `document.documentElement.scrollWidth` against `clientWidth`.

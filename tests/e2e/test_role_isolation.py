@@ -1,7 +1,7 @@
 """Three-role isolation E2E: route guards, nav visibility and API-level 403 enforcement.
 
 All anchors are frozen `data-testid`s. The `router.beforeEach` guard in
-`web/src/router/index.ts` redirects authenticated users without the required role to
+`src/frontend/src/router/index.ts` redirects authenticated users without the required role to
 `/403` (`forbidden-page`), while the backend independently returns
 `403 FORBIDDEN_ROLE` — both layers are asserted so a UI-only regression cannot pass.
 """

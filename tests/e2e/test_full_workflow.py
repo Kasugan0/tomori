@@ -1,7 +1,7 @@
 """Full lifecycle E2E: inspector reports -> admin dispatches -> tech repairs -> inspector accepts.
 
-Every UI anchor is a frozen `data-testid` (`docs/API.md` §8, implemented in `web/src/**`).
-`ElMessageBox.confirm` cannot carry a testid (`web/src` uses it directly, not wrapped), so
+Every UI anchor is a frozen `data-testid` (`docs/API.md` §8, implemented in `src/frontend/src/**`).
+`ElMessageBox.confirm` cannot carry a testid (`src/frontend/src` uses it directly, not wrapped), so
 only confirmation buttons are located by `role=button`; see `conftest.MESSAGE_BOX_NOTE`.
 The two native `<input type=file>` controls for repair/acceptance photos also carry no
 testid, so they are addressed by `input[type=file]` inside the already-scoped page.
@@ -109,7 +109,7 @@ def test_full_workflow_report_dispatch_repair_accept_close(
 
     page.get_by_test_id("repair-arrival-checkin-btn").click()
 
-    # 电气安全六件套：总开关 + 5 项逐条勾选（web/src 严禁默认勾选）
+    # 电气安全六件套：总开关 + 5 项逐条勾选（src/frontend/src 严禁默认勾选）
     page.get_by_test_id("repair-safety-checkbox").check()
     for item in (
         "repair-safety-item-power-isolated",

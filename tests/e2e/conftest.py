@@ -290,8 +290,10 @@ def _start_frontend(*, port: int, api_target: str, log_name: str) -> subprocess.
     """Spawn the real Vite dev server on `port`, proxying `/api/v1` to `api_target`."""
     if shutil.which("pnpm") is None:
         raise RuntimeError("未找到 pnpm，无法启动 E2E 前端")
-    if not (REPO_ROOT / "web" / "node_modules").is_dir():
-        raise RuntimeError("web/node_modules 缺失，请先执行 pnpm --dir web install")
+    if not (REPO_ROOT / "src" / "frontend" / "node_modules").is_dir():
+        raise RuntimeError(
+            "src/frontend/node_modules 缺失，请先执行 pnpm --dir src/frontend install"
+        )
 
     env = dict(os.environ)
     env["VITE_API_TARGET"] = api_target
@@ -299,7 +301,7 @@ def _start_frontend(*, port: int, api_target: str, log_name: str) -> subprocess.
         [
             "pnpm",
             "--dir",
-            "web",
+            "src/frontend",
             "dev",
             "--mode",
             "e2e",
@@ -436,7 +438,7 @@ def _artifact_capture(
 
 # ── interaction helpers (testids are the frozen contract) ────────────────────
 MESSAGE_BOX_NOTE = (
-    "Element Plus `ElMessageBox.confirm` 渲染在 Vue app 之外且 `web/src` 未外包封装，"
+    "Element Plus `ElMessageBox.confirm` 渲染在 Vue app 之外且 `src/frontend/src` 未外包封装，"
     "无法承载 data-testid；确认弹窗只能按 role=button + 可见名称定位。"
 )
 
