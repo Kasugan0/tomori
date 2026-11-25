@@ -4,24 +4,25 @@
 
 ```text
 src/
-├── backend/
-│   └── tomori/           # 后端 Python 包（可 `uv sync` 安装，`src` layout）
-│       ├── api/          # 薄壳（deps/errors/v1：auth/dispatches/health/master_data/operations/tickets）
-│       ├── services/     # 重逻辑（state_machine/ticket_service/dispatch/rework/sla/grading/auth/media/exceptions）
-│       ├── models/       # SQLAlchemy 17 表（76 CHECK/41 FK/37 索引/6 部分唯一）
-│       ├── schemas/      # Pydantic 出参/错误契约（auth/common/dispatch/master_data/operations/ticket）
-│       ├── workers/      # notifier（通知投递）+ sla_scanner（定时 SLA 扫描）
-│       ├── vision/       # 视觉 13 文件（whitelist/client/mapping/metrics/contract/errors/image_io/baseline/config/eda/dataset_prep/trainer/__init__）
-│       ├── db/           # base / session / types
-│       └── settings.py   # Settings（.env/application.yml 字段映射）
-├── frontend/             # Vue 3 + TypeScript + Vite + Element Plus（pnpm 独立安装，不再用 `web/`）
-│   ├── src/              # views / components / stores / api / router / main.ts
-│   ├── vite.config.ts    # 开发/构建（proxy → 18141）
-│   ├── package.json      # pin 精确版本（`D-23`）
-│   └── dist/             # 构建产物（gitignored）
+├── backend/                  # 后端 Python（uv/pip 可安装 src layout）
+│   └── tomori/               # 唯一包根（pyproject.toml module-name="tomori"/module-root="src/backend"）
+│       ├── api/              # 薄壳（deps/errors/idempotency/v1：auth/dispatches/health/master_data/operations/tickets）
+│       │   └── v1/           # auth(12)/dispatches(10)/health(1)/master_data(13)/operations(12)/tickets(13)
+│       ├── services/         # 重逻辑（state_machine/ticket_service/dispatch/rework/sla/grading/auth/media/exceptions）
+│       ├── models/           # SQLAlchemy 17 表（76 CHECK/41 FK/37 索引/6 部分唯一）
+│       ├── schemas/          # Pydantic 出参/错误契约（auth/common/dispatch/master_data/operations/ticket）
+│       ├── workers/          # notifier（通知投递）+ sla_scanner（定时 SLA 扫描）
+│       ├── vision/           # 视觉 13 文件（whitelist/client/mapping/metrics/contract/errors/image_io/baseline/config/eda/dataset_prep/trainer/__init__）
+│       ├── db/               # base / session / types
+│       └── settings.py       # Settings（.env/application.yml 字段映射）
+├── frontend/                 # Vue 3 + TypeScript + Vite + Element Plus（pnpm 独立安装，不再用 `web/`）
+│   ├── src/                  # views / components / stores / api / router / main.ts
+│   ├── vite.config.ts        # 开发/构建（proxy → backend 18141）
+│   ├── package.json          # pin 精确版本（`D-23`）
+│   └── dist/                 # 构建产物（gitignored）
 └── database/
-    ├── schema.sql        # 17 表直建 DDL（独立于 Alembic，psql 直建）
-    └── seed.sql          # 演示种子（3 角色/3 区域/4 账号/6 授权/5 规则/3 点位/2 工单）
+    ├── schema.sql            # 17 表直建 DDL（独立于 Alembic，psql 直建）
+    └── seed.sql              # 演示种子（3 角色/3 区域/4 账号/6 授权/5 规则/3 点位/2 工单）
 
 config/application.example.yml  # `__PLACEHOLDER__` YAML 模板（与 `settings.py`/`env` 字段一一映射）
 migrations/versions/            # Alembic 迁移（0001..0004）
@@ -61,7 +62,7 @@ pnpm --dir src/frontend typecheck
 
 ## 关键纪律
 
-- `import` 统一为 **`tomori.*`**（`src/backend/tomori` 为唯一包根，`module-root = "src"`）；
+- `import` 统一为 **`tomori.*`**（`src/backend/tomori` 为唯一包根，`module-root = "src/backend"`）；
 - `vision` 重型依赖（`ultralytics`/`onnxruntime`/`cv2`）走**函数内延迟导入**（`baseline`/`client`/`mapping` 层），保证纯后端无 `vision` extra 也可 `import tomori.*`；
 - `vision` 模块共 **13** `.py` 文件（`baseline`/`client`/`config`/`contract`/`dataset_prep`/`eda`/`errors`/`image_io`/`__init__`/`mapping`/`metrics`/`trainer`/`whitelist`）；
 - 运行时产物 `vision/{weights,reports,datasets,runs}`（gitignored）仍在**仓库根 `vision/`**，与 `src/backend/tomori/vision/` 源码分离；

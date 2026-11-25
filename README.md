@@ -10,7 +10,7 @@
 
 **阶段一冻结基线（`42eb94e`）时仓库没有任何应用代码**：无 `src/` 业务实现、无 `src/frontend/`、无 `tests/`、无 `migrations/`，`pyproject.toml` 的 `dependencies = []`。该基线当时唯一的交付物是精简合并后的**设计文档套件**（`docs/` 根下仅 5 份核心文档：`DECISION.md`、`REQUIREMENTS.md`、`DESIGN.md`、`API.md`、`RUNBOOK.md`；`docs/team/` 属本地过程产物，已 `.gitignore` 不入库）。
 
-**阶段二已完结（`src` 三层布局）**：Python 源码统一位于 **`src/backend/tomori/`** 单包（所有 import 为 `tomori.*`，`module-root="src/backend"`），`alembic.ini` 与 `migrations/`（`0001..0004`）位于**仓库根**，前端 `src/frontend/`（Vue 3 SPA，`pnpm`），测试 `tests/`（`unit`/`integration`/`e2e`），数据 DDL `src/database/{schema.sql,seed.sql}`，`60` 个业务端点 + `34` 个 `error.code` + `12` 个幂等端点全部落地；根级 `vision/` 仅存运行时产物（`weights/`、`reports/`，gitignored——`streetlight_v3` 自定义权重 `best_e2e.onnx` `nc=3` 已回传并经 `sha256sum -c` 校验），视觉源码位于 `src/backend/tomori/vision/`。
+**阶段二已完结（`src` 三层布局）**：Python 源码统一位于 **`src/backend/tomori/`** 单包（所有 import 为 `tomori.*`，`module-name="tomori"`/`module-root="src/backend"`），`alembic.ini` 与 `migrations/`（`0001..0004`）位于**仓库根**，前端 `src/frontend/`（Vue 3 SPA，`pnpm`），测试 `tests/`（`unit`/`integration`/`e2e`），数据 DDL `src/database/{schema.sql,seed.sql}`，`60` 个业务端点 + `34` 个 `error.code` + `12` 个幂等端点全部落地；根级 `vision/` 仅存运行时产物（`weights/`、`reports/`，gitignored——`streetlight_v3` 自定义权重 `best_e2e.onnx` `nc=3` 已回传并经 `sha256sum -c` 校验），视觉源码位于 `src/backend/tomori/vision/`。
 
 仓库里可运行的运维内容：`deploy/stack-guard.sh`（本地 PostgreSQL 栈启停与环境校验脚本，**已实测可用**）、`compose.yaml`（PostgreSQL 容器编排）、`deploy/postgres/init-dbs.sql`（创建 `tomori_dev` / `tomori_test`）。
 
@@ -80,7 +80,7 @@ pnpm --dir src/frontend dev
 
 **智能能力的边界**：只处理**静态巡查图片**；AI 产出的故障候选**必须经巡查员确认**才能进入派工，模型不得直接驱动业务。
 
-**已知边界**：`streetlight_v3`/`nc=3` 自定义权重已训成产出（`val mAP50=0.607`/`test 0.662`，`on 0.939`/`off 0.785`/`damaged 0.304`）并回传经 `sha256sum -c` 校验；视觉模块自定义模式已实跑（`D-30` 夜间亮灯参照 + `damaged` 类候选全通）；`baseline_pretrained_opencv` 兜底降级链保留（置信度受 DB `CHECK` 封顶 `0.65`），`strict_custom` 模式在权重缺失时返回 `503 VISION_DISABLED`。`streetlight_occluded` 已弃用（`d1` 独源 `235` 框/`merged_v5` 合并 `227` 框 `~95%` 错标，`API` `fault_type=OCCLUDED` 保留手工报障）。
+**已知边界**：`streetlight_v3`/`nc=3` 自定义权重已训成产出（`val mAP50=0.607`/`test 0.662`，`on 0.939`/`off 0.785`/`damaged 0.304`）并回传经 `sha256sum -c` 校验；视觉模块自定义模式已实跑（`D-30` 夜间亮灯参照 + `damaged` 类候选全通）；`baseline_pretrained_opencv` 兜底降级链保留（置信度受 DB `CHECK` 封顶 `0.65`），`strict_custom` 模式在权重缺失时返回 `503 VISION_DISABLED`。`streetlight_occluded` 已弃用（`d1` 源 `235` 框/`merged_v5` 合并 `227` 框 `~95%` 错标，`API` `fault_type=OCCLUDED` 保留手工报障）。
 
 ---
 
