@@ -436,18 +436,23 @@ def run_training_pipeline(cfg: TrainConfig) -> TrainArtifacts:
             and (stopped_epoch_1based - 1) < (cfg.epochs - cfg.close_mosaic)
         ):
             polish_model = yolo_cls(str(best_pt))
-            polish_model.train(
-                name=f"{cfg.run_name}_polish",
-                epochs=cfg.mosaic_polish_epochs,
-                patience=0,
-                lr0=cfg.lr0 * 0.2,
-                lrf=0.05,
-                cos_lr=True,
-                mosaic=0.0,
-                mixup=0.0,
-                copy_paste=0.0,
-                **_train_kwargs(cfg, batch),
+            # 合并去重：`_train_kwargs` 已含 `cos_lr`/`data`/`project`/`imgsz`/`batch` 等共用项，
+            # 显式 polish kwargs 以 `update` 覆盖——避免 `cos_lr` 等键重复传参（`TypeError`）。
+            polish_kwargs = _train_kwargs(cfg, batch)
+            polish_kwargs.update(
+                {
+                    "name": f"{cfg.run_name}_polish",
+                    "epochs": cfg.mosaic_polish_epochs,
+                    "patience": 0,
+                    "lr0": cfg.lr0 * 0.2,
+                    "lrf": 0.05,
+                    "cos_lr": False,
+                    "mosaic": 0.0,
+                    "mixup": 0.0,
+                    "copy_paste": 0.0,
+                }
             )
+            polish_model.train(**polish_kwargs)
             p_trainer = getattr(polish_model, "trainer", None)
             p_best = (
                 Path(p_trainer.best)
