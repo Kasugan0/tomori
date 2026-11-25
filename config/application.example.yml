@@ -1,0 +1,78 @@
+# ============================================================================
+# Tomori (#141 公共照明故障工单系统) — application.example.yml 占位配置模板
+# ----------------------------------------------------------------------------
+# 由 `.env.example` 与 `src/backend/tomori/settings.py` `Settings` 字段一一映射生成的
+# YAML 形态配置模板；所有值均为 `__PLACEHOLDER__`，拷贝为 `application.yml` 后
+# 逐项填入真实值（严禁把真实密钥提交进仓库——`.env`/真实 `application.yml` 已 gitignored）。
+#
+# 字段↔Settings 映射口径（`src/backend/tomori/settings.py`）：
+#   app.env            <- APP_ENV              app.timezone         <- TZ
+#   database.host/port/user/password/db/test_db <- TOMORI_PG_*
+#   database.url       <- DATABASE_URL         database.test_url    <- TEST_DATABASE_URL
+#   server.backend_host/port                   <- BACKEND_HOST/PORT
+#   server.frontend_host/port                  <- FRONTEND_HOST/PORT
+#   server.cors_origins                        <- CORS_ORIGINS
+#   auth.jwt_secret_key/jwt_algorithm/access_token_expire_minutes
+#                                          <- JWT_SECRET_KEY/JWT_ALGORITHM/JWT_ACCESS_TOKEN_EXPIRE_MINUTES
+#   upload.dir/max_upload_size_mb/allowed_extensions
+#                                          <- UPLOAD_DIR/MAX_UPLOAD_SIZE_MB/ALLOWED_IMAGE_EXTENSIONS
+#   vision.*           <- YOLO_*               (详见 settings.py:66-74)
+#   gpu_ssh.*          <- GPU_SSH_*/GPU_REMOTE_*
+# ============================================================================
+
+app:
+  env: __PLACEHOLDER__          # development | staging | production
+  timezone: __PLACEHOLDER__     # e.g. Asia/Shanghai
+
+database:
+  host: __PLACEHOLDER__         # e.g. 127.0.0.1（宿主机 25432 已避开 5432/15432 冲突）
+  port: __PLACEHOLDER__         # e.g. 25432
+  user: __PLACEHOLDER__         # e.g. tomori
+  password: __PLACEHOLDER__     # 敏感——真实值只放本地 .env/application.yml
+  db: __PLACEHOLDER__           # e.g. tomori_dev
+  test_db: __PLACEHOLDER__      # e.g. tomori_test
+  url: __PLACEHOLDER__          # postgresql+psycopg://<user>:<pw>@<host>:<port>/<db>
+  test_url: __PLACEHOLDER__     # postgresql+psycopg://<user>:<pw>@<host>:<port>/<test_db>
+
+server:
+  backend_host: __PLACEHOLDER__ # 127.0.0.1
+  backend_port: __PLACEHOLDER__ # 18141
+  frontend_host: __PLACEHOLDER__# 127.0.0.1
+  frontend_port: __PLACEHOLDER__# 15173
+  e2e_backend_port: __PLACEHOLDER__ # 18142（./deploy/stack-guard.sh claim-e2e 守护）
+  e2e_frontend_port: __PLACEHOLDER__# 15174
+  cors_origins: __PLACEHOLDER__ # 逗号分隔，如 http://127.0.0.1:15173,http://localhost:15173
+
+auth:
+  jwt_secret_key: __PLACEHOLDER__        # 必填，随机长密钥（Secrets 管理，不入库）
+  jwt_algorithm: __PLACEHOLDER__         # HS256
+  access_token_expire_minutes: __PLACEHOLDER__ # 60
+
+upload:
+  dir: __PLACEHOLDER__            # ./uploads（gitignored）
+  max_upload_size_mb: __PLACEHOLDER__ # 15（>15MiB → 413 IMAGE_SIZE_EXCEEDED）
+  allowed_extensions: __PLACEHOLDER__ # jpg,jpeg,png,webp
+
+vision:
+  weights_path: __PLACEHOLDER__      # ./vision/weights/best.pt（gitignored 运行时权重）
+  fallback_model: __PLACEHOLDER__    # yolo26s.pt（官方基线，20,422,725 B）
+  device: __PLACEHOLDER__            # cpu 或 0（CUDA）
+  conf_threshold: __PLACEHOLDER__    # 0.25
+  iou_threshold: __PLACEHOLDER__     # 0.45
+  img_size: __PLACEHOLDER__          # 1280（训练/导出/推理/D-28 四端一致，必须等于 metrics.json.imgsz）
+  inference_enabled: __PLACEHOLDER__ # true | false
+  inference_mode: __PLACEHOLDER__    # auto | strict_custom
+  autoinstall: __PLACEHOLDER__       # False（禁 Ultralytics 运行时静默装包）
+
+gpu_ssh:
+  host: __PLACEHOLDER__               # 远端 GPU 训练机地址
+  port: __PLACEHOLDER__               # 13142
+  user: __PLACEHOLDER__               # ssh 用户
+  remote_work_dir: __PLACEHOLDER__    # /root/autodl-tmp/tomori/repo
+  remote_dataset_dir: __PLACEHOLDER__ # /root/autodl-tmp/tomori/datasets
+  remote_runs_dir: __PLACEHOLDER__    # /root/autodl-tmp/tomori/runs
+  remote_venv_dir: __PLACEHOLDER__    # /root/autodl-tmp/tomori/venv
+  remote_weights_dir: __PLACEHOLDER__ # /root/autodl-tmp/tomori/weights
+
+log:
+  level: __PLACEHOLDER__  # INFO | DEBUG | WARNING（Settings 未内置该字段，属案例模板扩展项）
