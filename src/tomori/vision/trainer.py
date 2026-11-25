@@ -157,11 +157,21 @@ def _load_yaml_dict(path: Path) -> dict[str, Any]:
     return loaded
 
 
-def validate_data_yaml(data_yaml: Path) -> tuple[dict[str, Any], int]:
-    """核验 `data.yaml` 类别数量与顺序严格对齐 `config.RAW_CLASSES`，并统计训练集图像数."""
+def validate_data_yaml(data_yaml: Path) -> tuple[dict[str, Any], list[str], int]:
+    """核验 `data.yaml` `names`/`nc` 为 `config.RAW_CLASSES` 的**前缀子集**并统计训练集图像数.
+
+    `config.RAW_CLASSES` 是类名母集（`nc<=4` 的词汇全集）；`data.yaml` 是训练类表的
+    **权威源**——`merged_v5`/`v6` `nc=4`（`RAW_CLASSES` 全保留）与 `merged_v7` `nc=3`
+    （弃 `occluded`）都必须能用同一 `trainer.py`。判据：`names` 必须等于
+    `RAW_CLASSES[:nc]`（前缀，不允许跳过中间类），且 `nc` 字段与 `names` 数量一致。
+
+    Returns:
+        `(parsed_data_yaml, class_names, train_count)`：`class_names` 为 `data.yaml`
+        解析出的实际类表（透传给 `metrics.json`/`per_class`/`extract_det_metrics`）。
+    """
     parsed = _load_yaml_dict(data_yaml)
     names_raw = parsed.get("names")
-    expected = list(config.RAW_CLASSES)
+    vocab = list(config.RAW_CLASSES)
     if isinstance(names_raw, list):
         actual = [str(x) for x in names_raw]
     elif isinstance(names_raw, dict):
@@ -169,14 +179,13 @@ def validate_data_yaml(data_yaml: Path) -> tuple[dict[str, Any], int]:
     else:
         raise ValueError(f"data.yaml 缺少合法 names 字段: {data_yaml}")
 
-    if actual != expected:
+    if len(actual) > len(vocab) or actual != vocab[: len(actual)]:
         raise ValueError(
-            f"data.yaml names 与 config.RAW_CLASSES 不一致: 期望 {expected}，实际 {actual}"
+            f"data.yaml names 不是 config.RAW_CLASSES 的前缀子集: vocab={vocab}，实际 {actual}"
         )
-
     nc_val = parsed.get("nc")
-    if nc_val is not None and int(nc_val) != len(expected):
-        raise ValueError(f"data.yaml nc={nc_val} 与期望 {len(expected)} 不一致")
+    if nc_val is not None and int(nc_val) != len(actual):
+        raise ValueError(f"data.yaml nc={nc_val} 与 names 实际 {len(actual)} 不一致")
 
     train_count = 0
     root_str = parsed.get("path")
@@ -190,7 +199,7 @@ def validate_data_yaml(data_yaml: Path) -> tuple[dict[str, Any], int]:
                 for p in train_dir.rglob("*")
                 if p.is_file() and p.suffix.lower() in config.ALLOWED_EXTENSIONS
             )
-    return parsed, train_count
+    return parsed, actual, train_count
 
 
 def extract_det_metrics(det_metrics: Any, class_names: Sequence[str]) -> dict[str, Any]:
@@ -353,7 +362,9 @@ def _train_kwargs(cfg: TrainConfig, batch: int) -> dict[str, Any]:
 def run_training_pipeline(cfg: TrainConfig) -> TrainArtifacts:
     """执行（或 `--dry-run` 预演）YOLO26s@1280 训练、val/test 评估、ONNX 导出与清单落盘."""
     os.environ["YOLO_AUTOINSTALL"] = "False"
-    data_dict, _train_count = validate_data_yaml(cfg.data_yaml)
+    # `data.yaml` 是训练类表权威源：`validate_data_yaml` 返回 `data.yaml.names`
+    # （`nc=4`/`nc=3` 均合法），透传给 `metrics.json`/`per_class`/`extract_det_metrics`
+    data_dict, class_names, _train_count = validate_data_yaml(cfg.data_yaml)
     batch = cfg.batch  # 固定整数 batch（>= 1，经 __post_init__ 校验），不做任何探测/取幂
 
     if cfg.dry_run:
@@ -449,7 +460,6 @@ def run_training_pipeline(cfg: TrainConfig) -> TrainArtifacts:
         stopped_epoch_1based = None
 
     best_model = yolo_cls(str(best_pt))
-    class_names = list(config.RAW_CLASSES)
 
     # --- 部署头（one2one 端到端）即早停判据头 ---
     # `EarlyStopping`（`utils/torch_utils.py:1120-1169`）监控训练内 `self.validate()` 的
