@@ -192,11 +192,10 @@ def _load_metrics_metadata(
     weights_path: Path | None,
     metrics_path: Path | None = None,
 ) -> dict[str, Any] | None:
-    """读取 `metrics.json`（先查 `./vision/reports/streetlight_v1/metrics.json`，再查同目录）."""
+    """读 `metrics.json`：`metrics_path` 优先，`weights_path` 同目录次查（无硬编码 run 目录）."""
     candidates: list[Path] = []
     if metrics_path is not None:
         candidates.append(metrics_path)
-    candidates.append(Path("./vision/reports/streetlight_v1/metrics.json"))
     if weights_path is not None:
         candidates.append(weights_path.with_name("metrics.json"))
 
@@ -246,10 +245,15 @@ def _validate_metrics_names(names_obj: Any) -> None:
             ) from exc
         parsed = [str(val) for _, val in ordered]
 
-    if parsed is not None and parsed != expected:
+    # `names` 必须等于 `RAW_CLASSES` 前缀子集（`trainer.py` `RAW_CLASSES[:nc]` 同义）——
+    # `nc=3`/`4`/`2`/`1` 均合法；跳类/`len>4`/非法名/空 `names` 拒绝（`occluded` 弃用 `nc=3` 兼容）
+    if parsed is not None and (
+        not parsed or len(parsed) > len(expected) or parsed != expected[: len(parsed)]
+    ):
         raise _OnnxInvalidArgumentError(
             VISION_DISABLED,
-            f"INVALID_ARGUMENT: metrics.json 类别列表不匹配: 期望 {expected}，实际 {parsed}",
+            f"INVALID_ARGUMENT: metrics.json 类别列表不匹配（须为 config.RAW_CLASSES 前缀子集）: "
+            f"期望前缀 {expected}，实际 {parsed}",
             {
                 "analysis_stage": "CONFIG_CHECK",
                 "error_kind": "INVALID_ARGUMENT",

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import io
+import json
 import re
 import struct
 import zlib
 from pathlib import Path
+from typing import Any
 
 import pytest
 from PIL import Image
@@ -185,6 +187,58 @@ def test_onnx_shape_1280_passes_and_640_or_1024_rejected_with_503(
     assert exc_meta.value.http_status == 503
     assert exc_meta.value.code == "VISION_DISABLED"
     assert exc_meta.value.details["error_kind"] == "INVALID_ARGUMENT"
+
+
+def test_validate_metrics_names_nc3_prefix_subset(tmp_path: Path) -> None:
+    """`metrics.json` `names` 必须 `config.RAW_CLASSES` 前缀子集（`nc=3`/`4`/`2`/`1` 合法）；
+    跳类/`len>4`/非法名/空 `names` 拒绝（`occluded` 弃用 `nc=3` 兼容）."""
+    from tomori.vision.client import _validate_metrics_names
+
+    ok_all4 = tmp_path / "names_all4.json"
+    ok_all4.write_text(json.dumps({"names": list(config.RAW_CLASSES)}), encoding="utf-8")
+    ok_nc3 = tmp_path / "names_nc3.json"
+    ok_nc3.write_text(
+        json.dumps(
+            {"names": {0: "streetlight_on", 1: "streetlight_off", 2: "streetlight_damaged"}}
+        ),
+        encoding="utf-8",
+    )
+    ok_nc1 = tmp_path / "names_nc1.json"
+    ok_nc1.write_text(json.dumps({"names": ["streetlight_on"]}), encoding="utf-8")
+
+    # 合法：list/dict `nc` 变体全部 `RAW_CLASSES` 前缀子集
+    for path in (ok_all4, ok_nc3, ok_nc1):
+        _validate_metrics_names(json.loads(path.read_text())["names"])
+
+    # 非法：跳类/`len>4`/非法名/空 `names`
+    cases: dict[str, dict[str, Any]] = {
+        "skip_damaged": {"names": ["streetlight_on", "streetlight_off", "streetlight_occluded"]},
+        "skip_off": {
+            "names": {
+                0: "streetlight_on",
+                1: "streetlight_damaged",
+                2: "streetlight_occluded",
+            }
+        },
+        "over4": {"names": ["a", "b", "c", "d", "e"]},
+        "bad_name": {"names": ["streetlight_bad"]},
+        "empty": {"names": []},
+    }
+    for label, payload in cases.items():
+        with pytest.raises((VisionError, ValueError)) as exc:
+            _validate_metrics_names(payload["names"])
+        if hasattr(exc.value, "code"):
+            assert exc.value.code == "VISION_DISABLED", label
+        assert "INVALID_ARGUMENT" in str(exc.value) or "INVALID_ARGUMENT" in repr(
+            getattr(exc.value, "details", {})
+        ), label
+
+    # `dict` 键非法（非数字）
+    with pytest.raises((VisionError, ValueError)) as exc_dict:
+        _validate_metrics_names({"bad": "x"})
+    assert "INVALID_ARGUMENT" in str(exc_dict.value) or "INVALID_ARGUMENT" in repr(
+        getattr(exc_dict.value, "details", {})
+    )
 
 
 def test_train_config_defaults_and_redline_guards(tmp_path: Path) -> None:
