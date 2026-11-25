@@ -256,7 +256,10 @@ def _assert_transition(
 
 
 def ticket_deep_link(ticket_id: int) -> str:
-    """工单详情前端路由唯一事实源（对齐 `web/src/router/index.ts` `tickets/:ticketId`）。"""
+    """工单详情前端路由唯一事实源。
+
+    对齐 `src/frontend/src/router/index.ts` 的 `tickets/:ticketId` 路由。
+    """
     return f"/tickets/{ticket_id}"
 
 
