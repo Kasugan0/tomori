@@ -1,4 +1,4 @@
-> 状态：阶段二训练技术手册（**`merged_v7`（`nc=3` 终版，`8` 源清洗管线）数据集与 EDA 实测、两处 ETL/EDA Bug 修复、源码参数定稿与 `task-74` `streetlight_v1`（`merged_v5`/`nc=4`）首次全周期正式训练实测结果回填**：`early_stopped @ epoch 43` / `batch=24` / `~30.8GB` 显存 / `6,421.67s`，`best_e2e.onnx` 已回传且 `sha256sum -c` 通过；`streetlight_v3`（`merged_v7`/`nc=3`）训练在跑，指标待回填）
+> 状态：阶段二训练技术手册（**`merged_v7`（`nc=3` 终版，`8` 源清洗管线）数据集与 EDA 实测、两处 ETL/EDA Bug 修复、源码参数定稿与 `task-74` `streetlight_v1`（`merged_v5`/`nc=4`）首次全周期正式训练实测结果回填**：`early_stopped @ epoch 43` / `batch=24` / `~30.8GB` 显存 / `6,421.67s`，`best_e2e.onnx` 已回传且 `sha256sum -c` 通过；`streetlight_v3`（`merged_v7`/`nc=3`）二次全周期训练已完结：`early_stopped @ epoch 70`（峰 `epoch 50` `mAP50 0.6067`/`mAP50-95 0.2798`），`batch=24`，`7,217s≈2h`，`best_e2e.onnx` `nc=3` 已回传 `sha256sum -c` `6/6` 通过、`client.py` `D-30`+`damaged` 验收全过）
 
 # 模型训练方案、数据集清洗与超参数设计（`TRAIN`）
 
@@ -17,7 +17,8 @@
 | **分辨率** | **`imgsz=1280`**（`2×640`，P3/8 `160×160`，四端锁死） | **`merged_v5`（清洗前基线）** `10,306` 图中 **`59.88%`（6,171 张）为 `1280×720`**、`64.20%` 宽 `>= 1280`，`25,855` 框中 `86.46%` 面积 `< 0.5%`、COCO Tiny（`<32²`）占 **`51.20%`**；`1280` 对 `1280×720` 众数图实现 `mode_letterbox_scale = 1.0` 零下采样，将全框发生下采样占比从 `72.70%` 压至 **`0.57%`**、`<2 P3 格(<16px)` 从 `1,300 (5.03%)` 降至 **`260 (1.01%)`**（`D-28`） |
 | **防泄漏切分** | `Union-Find` 分组 + **「多图组枚举 `3^k` + 单图组稀有度加权贪心」按类分层装箱**（`8:1:1`） | `d1` 为连续抽帧（`10` 个 `video_id`）、`d4` 含 `1,446` 预增广副本全锁 `train`；`merged_v6`/`merged_v7` `occluded` 归零后 `val`/`test` `≥30` 约束自动放宽（`occluded_min_per_split=0`）；**13 项**跨 split 防泄漏断言全部 **`0`** |
 | **领域增广约束** | **`flipud=0.0`**、**`hsv_v <= 0.25`**、**`hsv_s <= 0.4`**、适度 `degrees=5.0` / `mosaic=0.8` | 路灯杆不会倒立在天空（禁上下翻转）；默认 `hsv_s=0.7`/`hsv_v=0.4` 会把夜间灭灯洗成亮灯或混淆环境光，必须收紧亮度与饱和度扰动 |
-| **首次实训结果（`task-74` 实测）** | `early_stopped @ epoch 43`（`patience=20`，峰值 `epoch 23`），`batch=24`，`~30.8GB` 显存，`6,421.67s`（`~1h47m`） | `val e2e mAP50 0.34352 / mAP50-95 0.1633` vs `default 0.33764 / 0.16071`；`test e2e 0.38339 / 0.18055` vs `default 0.39389 / 0.18556`；`best_e2e.onnx` `[1,300,6]`，`sha256sum -c` 通过，详见 `§6.3` |
+| **首次实训结果（`task-74` 实测，`streetlight_v1`/`nc=4`）** | `early_stopped @ epoch 43`（`patience=20`，峰值 `epoch 23`），`batch=24`，`~30.8GB` 显存，`6,421.67s`（`~1h47m`） | `val e2e mAP50 0.34352 / mAP50-95 0.1633` vs `default 0.33764 / 0.16071`；`test e2e 0.38339 / 0.18055` vs `default 0.39389 / 0.18556`；`best_e2e.onnx` `[1,300,6]`，`sha256sum -c` 通过，详见 `§6.3` |
+| **二次实训结果（`task-166` 实测，`streetlight_v3`/`nc=3`）** | `early_stopped @ epoch 70`（`patience=20`，峰值 `epoch 50`），`batch=24`，`~30.85GB` 显存，`7,217.1s`（`~2h`） | `val e2e mAP50 0.60669 / mAP50-95 0.27984` vs `default 0.60700 / 0.27542`；`test e2e 0.66205 / 0.40127` vs `default 0.67595 / 0.40930`；`nc=3` 清洗收益 `mAP50 +76.6%`/`mAP50-95 +71.4%`（`off` `+181.7%`）；`best_e2e.onnx` `nc=3`，`sha256sum -c` `6/6` 通过，详见 `§6.4` |
 
 ---
 
@@ -135,7 +136,7 @@
 | `on` 框 | `21,133` | `12,960` | `12,960` |
 | `off` 框 | `3,072` | `3,072` | `3,072` |
 | `damaged` 框 | `1,423` | `1,423` | `1,423` |
-| 训练运行 | `streetlight_v1`（`task-74`，已完结） | — | `streetlight_v3`（进行中） |
+| 训练运行 | `streetlight_v1`（`task-74`，已完结） | — | `streetlight_v3`（`task-166`，已完结） |
 
 ---
 
@@ -485,7 +486,7 @@ cd /root/autodl-tmp/tomori/repo
 
 # 4) RTX 4080 SUPER 正式训练 + 双头离线验证/测试 + best_e2e.onnx 导出 + SHA256SUMS 生成
 #    --model/--project 为 CLI `required=True`（无机器默认路径）；`--batch` 固定整数 `>=1`（默认 `--batch 8`，`_DEFAULTS["batch"]=8`，AutoBatch 已删）
-#    `streetlight_v1` 实跑 `--batch 24`（`~30.8GB` 同卡上限实测）；`streetlight_v3` 沿用同款超参
+#    `streetlight_v1`/`streetlight_v3` 均实跑 `--batch 24`（`~30.8-30.85GB` 同卡上限实测）
 #    可选补充：若训练在 491 轮前早停且需两阶段无 Mosaic 收尾精修，可追加 --mosaic-polish-epochs 10
 /root/.local/bin/uv run --no-sync /root/autodl-tmp/tomori/repo/src/tomori/vision/trainer.py \
   --data /root/autodl-tmp/tomori/datasets/merged_v7/data.yaml \
@@ -506,13 +507,14 @@ cd /root/autodl-tmp/tomori/repo
 - **已实测回填（`task-74` 首次全周期正式训练，`2026-11-25`）**：
   1. **`merged_v5` 全周期 `yolo train` 已于远端 `RTX 4080 SUPER` 执行完成**：`early_stopped @ epoch 43`（`patience=20`，峰值 `epoch 23`），总耗时 `6,421.67s`（`~1h47m`），`batch=24`、`imgsz=1280`；双头 `val`/`test` 指标、`early_stopping_diagnostics`、`SHA256SUMS` 与 `best_e2e.onnx` 已回传本地且 `sha256sum -c` 通过——完整实测见 **`§6.3`**；
   2. **「早停判据头 == 部署头」实测闭环已达成**：`metrics.json` 实测 `val e2e mAP50 0.34352 / mAP50-95 0.16330` vs `default 0.33764 / 0.16071`（e2e `+0.59pp`）、`test e2e 0.38339 / 0.18055` vs `default 0.39389 / 0.18556`（差 `−1.05pp`）——双向差异均 `≤1.05pp`，证实训练判据头与交付物头一致（`§6.3.2`）；
-  3. **`D-30` 验收实测已通过**：`client.py` 真 `best_e2e.onnx`（`inference_mode=yolo26_onnx_e2e`）夜间 `streetlight_on` 样图 `3` 张（`10_01751`/`10_01606`/`10_01453`）全部判定 `is_fault_candidate=false`/`NORMAL_LIT`/`candidate_fault_type=null`/`suggested_severity_hint=none`，`ai_is_baseline_mode=false`（`§6.3.5`）。
+  3. **`D-30` 验收实测已通过**：`client.py` 真 `best_e2e.onnx`（`inference_mode=yolo26_onnx_e2e`）夜间 `streetlight_on` 样图 `3` 张（`10_01751`/`10_01606`/`10_01453`）全部判定 `is_fault_candidate=false`/`NORMAL_LIT`/`candidate_fault_type=null`/`suggested_severity_hint=none`，`ai_is_baseline_mode=false`（`§6.3.5`）；
+  4. **`streetlight_v3`/`merged_v7`（`nc=3`）二次全周期训练已于 `task-166` 完结**：`early_stopped @ epoch 70`（峰 `epoch 50` `mAP50 0.6067`/`mAP50-95 0.2798`），`batch=24`/`~30.85GB`，`7,217.1s≈2h`；`--mosaic-polish-epochs 20` polish `cos_lr` 重复 kwarg 崩溃由 `2ab866f` 修复后以 `--export-only` 完成链；`sha256sum -c` `6/6` 通过，`client.py` `D-30`（`3` 图 `6` 候选 `NORMAL_LIT`）+ `damaged`（`2` 图 `3` 候选 `FIXTURE_DAMAGED`/`P2`）验收全过——完整实测见 **`§6.4`**。
 
 ---
 
 ## 6.3 `streetlight_v1`/`merged_v5`（`nc=4`）首次全周期正式训练结果（`task-74` 实测回填，`2026-11-25`）
 
-> **`streetlight_v1` vs `streetlight_v3` 数据集对照**：`streetlight_v1`（输入 `merged_v5/data.yaml`/`nc=4`）含 `occluded` `227` 错标框（`AP50 val 0.125/test 0.0025`，`D-41` 弃用依据）；`streetlight_v3`（输入 `merged_v7/data.yaml`/`nc=3`）`occluded` 归零且 `on`/`off`/`damaged` 三类清标。`streetlight_v3` 指标待训练完结后回填。
+> **`streetlight_v1` vs `streetlight_v3` 数据集对照**：`streetlight_v1`（输入 `merged_v5/data.yaml`/`nc=4`）含 `occluded` `227` 错标框（`AP50 val 0.125/test 0.0025`，`D-41` 弃用依据）；`streetlight_v3`（输入 `merged_v7/data.yaml`/`nc=3`）`occluded` 归零且 `on`/`off`/`damaged` 三类清标。`streetlight_v3` 完整实测见 **`§6.4`**。
 
 > **数据源（全部逐项核自本地落盘文件）**：`./vision/reports/streetlight_v1/metrics.json`（20 键）、`./vision/reports/streetlight_v1/results.csv`（43 行逐轮实测）、`./vision/reports/streetlight_v1/args.yaml`（`batch=24`/`epochs=500`/`patience=20`/`imgsz=1280`/`optimizer=auto`/`lr0=0.01`/`lrf=0.01`/`cos_lr=false`/`mosaic=0.8`/`mixup=0.05`/`copy_paste=0.15`/`close_mosaic=10`/`flipud=0.0`/`hsv_v=0.25`/`hsv_s=0.4`/`degrees=5.0`/`nms=False`/`seed=42`/`deterministic=true`）、`.team/notes/dev-ops/logs/task74-d30-inference.log`（`client.py` 真权重 `D-30` 验收输出）。
 
@@ -590,3 +592,89 @@ cd /root/autodl-tmp/tomori/repo
 | `10_01453` | `night` / `warn`（`33.5`，`laplacian_var=49.03<60` 偏模糊建议重拍） | `3` | `false`（全 `3` 框） | `NORMAL_LIT` | `null` | `none` | `0.921/0.9671`、`0.904/0.9492`、`0.437/0.4589` | `0.9671` |
 
 - 三图 `primary_fault_type_suggestion=null`、`fusion_status=consistent`——`D-30` 回传「参照框」语义在真权重 + 真 `client.py` 链路上完整闭环。
+
+
+---
+
+## 6.4 `streetlight_v3`/`merged_v7`（`nc=3`）二次全周期正式训练结果（`task-166`，`2026-11-25`）
+
+> **数据源（全部逐项核自本地落盘文件）**：`./vision/reports/streetlight_v3/metrics.json`（`names` `3` 项/`head_contract`/双头指标/`train_config` 25 键/`early_stopping_diagnostics`/`onnx_verification`/`sha256`）、`./vision/reports/streetlight_v3/results.csv`（`70` 行逐轮实测）、`./vision/reports/streetlight_v3/args.yaml`（`batch=24`/`epochs=500`/`patience=20`/`imgsz=1280`/`data=merged_v7`/`name=streetlight_v3`/`model_version=yolo26s-streetlight-v3.0`）、`./vision/reports/streetlight_v3/SHA256SUMS`（`6` 文件）、`.team/notes/dev-ops/logs/task166-{d30-inference,d30-damaged}.log`（`D-30`/`damaged` 验收）、`.team/notes/dev-ops/task166-merged-v7-train-handback.md`。
+
+### 6.4.1 执行事实与 `mosaic_polish` `cos_lr` bug 如实记录
+
+- **执行事实**：`yolo train` `nc=3`（`names = [on, off, damaged]`，`data.yaml.names` 权威源——`D-43`）于 `merged_v7`（`6,983` 图 `5,570/846/567`）执行 `70` 轮后 `patience=20` 早停（`epoch 50` 峰值 `mAP50 0.6067`/`mAP50-95 0.27993`），总耗时 `7,217.1s`（`~2h`）；`batch=24`（GPU `100%`/`30,850 MiB`，`~1.9GB` 余量）、`imgsz=1280`、`optimizer="auto"`（`iterations>10000` 实际 `MuSGD`）、`amp=true`、`cos_lr=false`、`nms=False`（`train_config` 25 键全量写入 `metrics.json`）。
+- **`results.csv` 轨迹**：`ep1 0.343/0.105` → `ep10 0.380/0.138` → `ep20 0.532/0.242` → `ep30 0.578/0.241` → `ep40 0.596/0.250` → **`ep50` 峰值 `0.607/0.280`** → `ep55 0.598/0.268` → `ep60 0.572/0.249` → `ep70 0.570/0.264`——`epoch 50` 后平台回落，`patience=20` 正确锁 `best.pt` 于 `epoch 50`。
+- **`mosaic_polish` `cos_lr` bug 如实记录**：本批原随 `--mosaic-polish-epochs 20` 触发两阶段无 Mosaic 精修，`polish_model.train` 因 `_train_kwargs` 与显式 `cos_lr=True` 重复传参 `TypeError` 崩溃（`trainer.py:439` 修复点）；由 `vision-dev` `2ab866f`（`fix(vision): deduplicate cos_lr kwarg`，`polish_kwargs` dict `update` 去重覆盖）修复并推送；后续以 `--export-only` 完成 `val`/`test`/`export`/`SHA256SUMS` 链——**`mosaic_polish` 精修未实际执行**，属如实边界。
+- **`early_stopping_diagnostics` 为空 `{}` 如实记录**：`metrics.json` 由 `--export-only` 链重新生成，`train_config.mosaic_polish_epochs=0`（`--export-only` 默认）；`stopped_epoch=70`/`lr_remaining`/`e2e_loss` 权重未随导出链重写（`v1` 为训练链内写入）。
+
+### 6.4.2 双头验证/测试指标（`metrics.json` 逐项，`e2e` 部署头为权威）
+
+| Split | 指标 | 权威 `e2e`（`nms=False`，one2one） | 对照 `default`（`nms=None`，one2many+NMS） | `e2e − default` |
+|---|---|---:|---:|---:|
+| `val` | `mAP50` | **`0.60669`** | `0.60700` | `−0.0003` |
+| `val` | `mAP50-95` | **`0.27984`** | `0.27542` | `+0.0044` |
+| `val` | `mAP75` | `0.21112` | `0.20882` | `+0.0023` |
+| `val` | `mean_precision` | `0.64876` | `0.63149` | `+0.0173` |
+| `val` | `mean_recall` | `0.62496` | `0.65720` | `−0.0322` |
+| `test` | `mAP50` | **`0.66205`** | `0.67595` | `−0.0139` |
+| `test` | `mAP50-95` | **`0.40127`** | `0.40930` | `−0.0080` |
+| `test` | `mAP75` | `0.45012` | `0.45677` | `−0.0067` |
+| `test` | `mean_precision` | `0.70167` | `0.71871` | `−0.0170` |
+| `test` | `mean_recall` | `0.63455` | `0.66190` | `−0.0274` |
+
+- `e2e`/`default` 双向差异仍 `≤1.4pp`（`val` 互抵，`test` `default` 微优）——`nc=3` 下「早停判据头 == 部署头」契约持续成立。
+
+### 6.4.3 三类分 AP（`per_class`，`AP50 / AP50-95`，附 `precision / recall`）
+
+| Split | 类别 | `AP50` | `AP50-95` | `precision` | `recall` |
+|---|---|---:|---:|---:|---:|
+| `val` e2e | `streetlight_on` | **`0.87965`** | `0.48671` | `0.73297` | `0.90117` |
+| `val` e2e | `streetlight_off` | `0.61459` | `0.20456` | `0.60822` | `0.69905` |
+| `val` e2e | `streetlight_damaged` | `0.32585` | `0.14824` | `0.6051` | `0.27465` |
+| `val` default | `streetlight_on` | `0.88579` | `0.48417` | `0.74291` | `0.9263` |
+| `val` default | `streetlight_off` | `0.61333` | `0.20205` | `0.58322` | `0.74859` |
+| `val` default | `streetlight_damaged` | `0.32188` | `0.14004` | `0.56833` | `0.29671` |
+| `test` e2e | `streetlight_on` | **`0.93305`** | `0.6538` | `0.81126` | `0.91543` |
+| `test` e2e | `streetlight_off` | `0.77089` | `0.45212` | `0.7143` | `0.75532` |
+| `test` e2e | `streetlight_damaged` | `0.28221` | `0.09789` | `0.57947` | `0.2329` |
+| `test` default | `streetlight_on` | `0.93876` | `0.65935` | `0.81557` | `0.9273` |
+| `test` default | `streetlight_off` | `0.78507` | `0.46494` | `0.71129` | `0.79078` |
+| `test` default | `streetlight_damaged` | `0.30403` | `0.1036` | `0.62926` | `0.26761` |
+
+- **`ONNX` 契约实测**：`onnx_verification` `input=[1, 3, 1280, 1280]` → `output=[1, 300, 6]`（`images`/`output0`），`nms=False`、`end2end=True`、`nc=3`（`names` `3` 项 `on`/`off`/`damaged`）；`sha256` `best.pt=5f6c54…`、`best_e2e.onnx=f3b243…`、`last.pt=ea7a79…`（`SHA256SUMS` `6` 文件含 `best.pt`/`best_e2e.onnx`/`last.pt`/`results.csv`/`args.yaml`/`metrics.json`，`sha256sum -c` 全 `OK`）。
+
+### 6.4.4 `streetlight_v1`（`nc=4`）vs `streetlight_v3`（`nc=3`）同口径对比
+
+| 指标（同 `e2e` 头口径） | `streetlight_v1` | `streetlight_v3` | 变化 |
+|---|---:|---:|---|
+| `val` `mAP50` | `0.34352` | `0.60669` | **`+76.6%`** |
+| `val` `mAP50-95` | `0.16330` | `0.27984` | **`+71.4%`** |
+| `test` `mAP50` | `0.38339` | `0.66205` | `+72.7%` |
+| `test` `mAP50-95` | `0.18055` | `0.40127` | `+122.2%` |
+| `val` `AP50` `on` | `0.85479` | `0.87965` | `+2.9%` |
+| `val` `AP50` `off` | `0.21823` | `0.61459` | **`+181.7%`** |
+| `val` `AP50` `damaged` | `0.17563` | `0.32585` | `+85.5%` |
+| `val` `AP50` `occluded` | `0.12544` | 弃用（`nc=3` 不产出） | — |
+| `test` `AP50` `on` | `0.85102` | `0.93305` | `+9.6%` |
+| `test` `AP50` `off` | `0.46216` | `0.77089` | `+66.8%` |
+| `test` `AP50` `damaged` | `0.21789` | `0.28221` | `+29.5%` |
+| `test` `AP50` `occluded` | `0.0025` | 弃用（`nc=3` 不产出） | — |
+
+- **`nc=3` 清洗收益实证**：剔除 `3,088` 帧白天亮招牌误标 + `occluded` `227` 框错标后，`off`/`damaged` `AP50` 大幅提升；`handback` 头条 `off +260%`/`damaged +73%`/`on +10%` 为 `v1` `val e2e` → `v3` `test default` 跨口径对比（如实标注，同口径 `e2e` `val`/`test` 见上表）。
+- **`off` `test>val` 差异延续**：`vid05` 整组 `533` 框 `off` 进 `test`（`17.35%`）vs `val` `33` 框（`1.07%`）的 split 差异与 `v1` 一致（`merged_v7` 同组装箱），如实非泄漏。
+
+### 6.4.5 `D-30` + `damaged` 业务验收（`client.py` 真 `best_e2e.onnx`，`nc=3`）
+
+`client.py` 以 `inference_mode=yolo26_onnx_e2e`、`model_version=yolo26s-onnx-best_e2e`、`ai_is_baseline_mode=false` 实跑 `5` 张样图：
+
+| 样图 | 场景 / 质量 | 候选数 | `is_fault_candidate` | `visual_signal_state` | `candidate_fault_type` | `suggested_severity_hint` | `yolo_confidence` / `fused_confidence`（逐候选） |
+|---|---|---:|---|---|---|---|---|
+| `10_01751` | `night` / `pass` | `1` | `false` | `NORMAL_LIT` | `null` | `none` | `0.9119 / 0.9575` |
+| `10_01606` | `night` / `pass` | `2` | `false`（全 `2` 框） | `NORMAL_LIT` | `null` | `none` | `0.9206/0.9666`、`0.909/0.9545` |
+| `10_01453` | `night` / `warn` | `3` | `false`（全 `3` 框） | `NORMAL_LIT` | `null` | `none` | `0.925/0.9713`、`0.9206/0.9666`、`0.6195/0.6505` |
+| `d3_008436` | `day` / `pass` | `1` | **`true`** | `FIXTURE_DAMAGED` | `FIXTURE_DAMAGED` | **`P2`** | `0.3341 / 0.3441` |
+| `d3_008452` | `day` / `pass` | `2` | **`true`**（全 `2` 框） | `FIXTURE_DAMAGED` | `FIXTURE_DAMAGED` | **`P2`** | `0.3055/0.3147`、`0.2596/0.2674` |
+
+- **夜间亮灯 `D-30`**：`3` 图 `6` 候选全部 `NORMAL_LIT`/`is_fault_candidate=false`/`severity=none`/`primary_fault_type_suggestion=null`——`nc=3` 下回传参照框语义完整（`yolo`/`fused` 置信均高于 `v1` 同图：`0.91-0.93`/`0.95-0.97` vs `0.82-0.92`/`0.86-0.97`）；
+- **`damaged` 类真实可产出工单候选**：`merged_v7/test` 白天 `d3_*` `2` 图 `3` 候选全部 `FIXTURE_DAMAGED`/`is_fault_candidate=true`/`severity=P2`/`primary_fault_type_suggestion=FIXTURE_DAMAGED`——`v1` `damaged AP 0.176` 弱类经 `nc=3` 清洗提升至 `0.304`，`D-30` 业务链路从「仅参照框」升级为「参照 + 真实候选」全通；
+- **`occluded` 按 `D-41` 不产出**：`nc=3` 模型无该类 `raw_class`，`API` `fault_type=OCCLUDED` 仍为合法手工报障枚举（见 §2.1/`docs/API.md` §5）。
