@@ -24,7 +24,7 @@
 | **非唯一部分索引** | **12** | 带 `WHERE` 的非唯一索引（属普通索引 37 子集） | 部分唯一索引 6 个 |
 | **状态机套数** | **4** | 本文 §2（A 故障单 / B 派工 / C 返修 / D 通知） | `vision_analyses` 等一次性记录状态不构成业务状态机 |
 | **状态总数** | **29** | A 9 + B 7 + C 8 + D 5 | — |
-| **合法转移边** | **36** = A 15 + B 6 + C 8 + D 7 | 本文 §2 各转移表（编号行 42 − 6 条建单/初始入口行） | 初始创建入口行（`— → 初始态`，共 6 行）与非法黑名单边 |
+| **合法转移边** | **36** 个转移规则条目 = A 15 + B 6 + C 8 + D 7；按 `(from,to)` 字面图边展开为 **47** = A 16 + B 8 + C 14 + D 9（两口径，见 §2 口径说明） | 本文 §2 各转移表（编号行 `42` = `36` 规则条目 + `6` 条建单/初始入口行） | 初始创建入口行（`— → 初始态`，共 6 行）与非法黑名单边 |
 | **终态总数** | **11** | A 2 + B 5 + C 3 + D 1（含通知 `SENT`） | — |
 | **死路（非终态无出边）** | **0** | 29 − 11 = 18 个非终态逐一验证 | — |
 | **跨表不变量** | **8**（`I1`–`I8`） | 本文 §3.1 | 单表列级 `CHECK`（归 76） |
@@ -336,16 +336,18 @@ plugins = ["pydantic.mypy"]
 
 ---
 
-## 2. 状态机设计（4 套状态机 / 29 状态 / 36 合法边 / 11 终态 / 0 死路）
+## 2. 状态机设计（4 套状态机 / 29 状态 / 36 转移规则条目·按 `(from,to)` 图边计 `47` / 11 终态 / 0 死路）
 
-### 2.1 状态机 A：故障单主状态机（`fault_tickets.status`，9 态 / 15 合法边 / 2 终态）
+> **口径说明（边数两口径，与 `src/tomori/services/state_machine.py` 一致）**：本节各转移表按**转移规则条目**编号计数（`A15 + B6 + C8 + D7 = 36`——每条「守卫 + 触发者 + 审计 `action`」为一个编号逻辑规则）；同一代码映射按 `(from, to)` 字面图边展开为 **47**（`A16 + B8 + C14 + D9`），因部分规则条目覆盖多条字面边——A8「拒单或累计阈值转复核」为 `DISPATCHED → {PENDING_DISPATCH, MANUAL_REVIEW}` `2` 条边（`A 15 → 16`）；`PENDING_ACCEPT → {ACCEPTED, REJECTED, TIMEOUT_REASSIGNED, ESCALATED, CANCELLED}` + `ACCEPTED → {COMPLETED, ESCALATED, CANCELLED}` 合计 `8` 边（`B 6 → 8`）；C 各守卫覆盖 `14` 边（`C 8 → 14`）；`PROCESSING → {SENT, FAILED, PENDING, DEAD_LETTER}` 等合计 `9` 边（`D 7 → 9`）。各表编号行合计 `42` = `36` 规则条目 + `6` 条初始创建入口行（`— → 初始态`：A `2` 行 + B `1` 行 + C `2` 行 + D `1` 行）。下文各机器标题同时标注两口径。
+
+### 2.1 状态机 A：故障单主状态机（`fault_tickets.status`，9 态 / `15` 转移规则条目·`16` `(from,to)` 图边 / 2 终态）
 
 #### 状态全集与终态
 
 - **$S = 9$ 个状态**：`AI_CANDIDATE_PENDING` / `PENDING_DISPATCH` / `DISPATCHED` / `IN_REPAIR` / `PENDING_ACCEPTANCE` / `REWORK_PENDING_DISPATCH` / `MANUAL_REVIEW` / `CLOSED` / `CANCELLED`
 - **$T$（终态）= 2 个**：`CLOSED` / `CANCELLED`。**终态不可复活**，再修必须另开新单（旧单永久留档）。
 
-#### 全量转移边 $E$（17 行编号 = 2 条入口行 + 15 条合法边）
+#### 全量转移边 $E$（`17` 行编号 = `2` 条入口行 + `15` 个转移规则条目；按字面 `(from,to)` 展开 `16` 图边——`A8` 单条规则覆盖 `DISPATCHED → {PENDING_DISPATCH, MANUAL_REVIEW}` 两条边）
 
 | # | from → to | 触发者 | 端点 | 守卫（不满足即拒绝） | 审计 `action` |
 |---:|---|---|---|---|---|
@@ -400,9 +402,9 @@ CANCELLED          → *                      （终态不可复活）
 
 ---
 
-### 2.2 状态机 B：派工记录（`dispatch_records.status`，7 态 / 6 合法边 / 5 终态）
+### 2.2 状态机 B：派工记录（`dispatch_records.status`，7 态 / `6` 转移规则条目·`8` `(from,to)` 图边 / 5 终态）
 
-#### 转移边（7 行编号 = 1 条入口行 + 6 条合法边）
+#### 转移边（`7` 行编号 = `1` 条入口行 + `6` 个转移规则条目；按字面 `(from,to)` 展开 `8` 图边——`PENDING_ACCEPT` 出 `5` 边 + `ACCEPTED` 出 `3` 边）
 
 | # | from → to | 触发者 | 端点 | 守卫 |
 |---:|---|---|---|---|
@@ -420,9 +422,9 @@ CANCELLED          → *                      （终态不可复活）
 
 ---
 
-### 2.3 状态机 C：返修单（`rework_orders.status`，8 态 / 8 合法边 / 3 终态）
+### 2.3 状态机 C：返修单（`rework_orders.status`，8 态 / `8` 转移规则条目·`14` `(from,to)` 图边 / 3 终态）
 
-#### 转移边（10 行编号 = 2 条入口行 + 8 条合法边）
+#### 转移边（`10` 行编号 = `2` 条入口行 + `8` 个转移规则条目；按字面 `(from,to)` 展开 `14` 图边——`DISPATCHED`/`IN_REPAIR`/`PENDING_ACCEPTANCE` 各含终止/升级多目标边）
 
 | # | from → to | 触发者 | 守卫 |
 |---:|---|---|---|
@@ -460,9 +462,9 @@ round=3：派工 → 维修完成 → 巡查员驳回（round=3 > max_rework_rou
 
 ---
 
-### 2.4 状态机 D：通知任务（`notification_tasks.status`，5 态 / 7 合法边 / 1 终态）
+### 2.4 状态机 D：通知任务（`notification_tasks.status`，5 态 / `7` 转移规则条目·`9` `(from,to)` 图边 / 1 终态）
 
-#### 转移边（8 行编号 = 1 条入口行 + 7 条合法边）
+#### 转移边（`8` 行编号 = `1` 条入口行 + `7` 个转移规则条目；按字面 `(from,to)` 展开 `9` 图边——`PROCESSING` 出 `4` 边含自愈回退 `PENDING`）
 
 | # | from → to | 触发者 | 守卫 |
 |---:|---|---|---|
@@ -1331,7 +1333,7 @@ WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
 **已证实的（🟢）**：
 - 全部后端核心/开发/视觉包版本、`requires_python` 与依赖约束（2026-11-21 PyPI JSON API 实测），以及前端 11+1 包版本、`peerDependencies`、TS7 崩溃与 Element Plus `data-testid` 三类透传行为（npm registry + `element-plus@2.14.8` 源码 + jsdom 实测）。
 - Context7 MCP 通道在本环境**间歇性不稳定**（多次 `TypeError: fetch failed`，含连续 4 次与 6 次批次及 `task-52` 复测；`task-51` 抽验 `6/8` 成功且同库不同次成败不一；另有 Vue 2 索引陈旧），已定性为不可作为唯一取证通道，改以 Exa 官方页面直取 + 锁定版本源码交叉核验。
-- 4 套状态机 29 状态 / 36 合法边 / 11 终态 / 0 死路、`I1`–`I8`、`grading_rules` 144 种枚举组合穷尽覆盖（`94 + 34 + 14 + 2 = 144`）、以及郑州市令第 152 号（2020 第 237 号二次修正）48h 法源全文。
+- 4 套状态机 `29` 状态 / `36` 转移规则条目（按 `(from,to)` 图边计 `47`）/ `11` 终态 / `0` 死路、`I1`–`I8`、`grading_rules` 144 种枚举组合穷尽覆盖（`94 + 34 + 14 + 2 = 144`）、以及郑州市令第 152 号（2020 第 237 号二次修正）48h 法源全文。
 - 17 张业务表的列/约束/索引完整设计与逐项求和复算口径（`76/41/22/37/6/12`）；`backend-dev` 已在临时 PG 17.12 库实跑验证 `uq_fault_tickets_active_point_type`、`ck_fault_tickets_inspector_confirmation_serialized` 与 `I2` 跨表检测 SQL。
 - 远端 GPU 实测基线（`RTX 4080 SUPER` / `32760 MiB` / `/root/autodl-tmp/tomori/` / 预装 `/root/.local/bin/uv 0.13.7`，见 `docs/RUNBOOK.md` §6.1.1–§6.1.2）及 D1–D7 数据集真实来源与原始许可元数据。
 - 全项目 `40/40` 裁决已全部定案（含 `D-29`、`D-30`）。
@@ -1365,3 +1367,4 @@ WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
 | 2026-11-24（task-71） | **阶段二实落盘微同步**：① §1.1 迁移脚本名由原长名更新为实际落盘文件名 **`0003_circular_fk_scheme_b.py`**（Alembic `alembic_version.version_num` 列宽硬编码 `VARCHAR(32)`，34 字符会截断报错，故缩短为 25 字符）；② §1.1 / §5.3 / §8.1 同步 `src/tomori/vision/` 10 个模块已迁入并完成 4 项修复（原根级 `vision/*.py` 已移除，仅留空目录 `vision/` 供运行时 `weights/` 与 `reports/` 产物） | `task-71`（对齐 `migrations/` 与 `src/tomori/vision/` 实落盘） |
 | 2026-11-24（task-77） | **视觉分辨率 1280 与长周期训练参数同步**：① 按 `D-28` 与 D1 全量 EDA（8,428 图 `81.86%` 为 `1280×720`）将 §1.1 `YOLO_IMG_SIZE`、§5.3 `imgsz` 与 ONNX 静态输入 `[1, 3, 1280, 1280]` 及 §7 `TS-2` 同步升级为 **`1280`**（`2×640` 1:1 零下采样并指向 `docs/TRAIN.md` §2.2）；② §5.3 与 §8.1 远端训练参数同步为 **`epochs=500, patience=20`**（配合 `early_stopping_diagnostics` 早停源码诊断与可选 `--mosaic-polish-epochs`，详见 `docs/TRAIN.md` §3）；③ §1.1 / §5.3 / §8.1 登记 `src/tomori/vision/` 已落盘 11 个模块（新增只读 EDA 工具 `eda.py`，另有 `dataset_prep.py`、`trainer.py`，共 13 个 `.py` 文件）；同步修正 `task-26` 旧记录中 `imgsz` 字面残留 | `task-77`（`D-28` 1280 + 500 epochs/patience 20 + `eda.py` + `TRAIN.md` EDA 引用） |
 | 2026-11-24（task-109） | **文档-实现一致性同步**：以已入库 `web/src/views/inspection/InspectionReportView.vue:660` 为准，将 §5.2 `D3` 视觉降级横幅旧前端锚点更正为 **`data-testid="inspection-vision-disabled"`**，并补注其携带的 `data-code` 与 `data-fallback-action="MANUAL_REPORT"` 可测属性 | `tester` `task-106` 上报 + `task-109` Lead 裁决 |
+| 2026-11-25（task-156） | **状态机边数两口径统一**：§0 汇总表、§2 段首与各机器标题（A/B/C/D）边数表述统一为「**`36` 转移规则条目**（`A15+B6+C8+D7`，每条守卫+审计 `action` 一个编号）**与** `(from,to)` 字面图边 **`47`**（`A16+B8+C14+D9`）」双口径并补口径说明脚注（A8 单条规则覆盖 `DISPATCHED → {PENDING_DISPATCH, MANUAL_REVIEW}` `2` 边等）；消除与 `state_machine.py` 展开图边 `47` 易混的旧单口径写法 | `auditor` `task-81` `P3-1` + `task-156`（与 `backend-dev` `task-155` 代码注释同口径） |

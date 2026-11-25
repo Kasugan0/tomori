@@ -2,10 +2,13 @@
 
 严格纪律（`docs/DESIGN.md` §1.1、§2.1–§2.4、§3.1）：
 1. 全项目代码仓仅允许在本模块修改以下 4 张表的 `status` 字段：
-   - `fault_tickets`（9 态 / 15 合法边 + 2 入口 / 2 终态）
-   - `dispatch_records`（7 态 / 6 合法边 + 1 入口 / 5 终态）
-   - `rework_orders`（8 态 / 8 合法边 + 2 入口 / 3 终态）
-   - `notification_tasks`（5 态 / 7 合法边 + 1 入口 / 1 终态）
+   - `fault_tickets`（9 态 / 16 边 + 2 入口 / 2 终态）
+   - `dispatch_records`（7 态 / 8 边 + 1 入口 / 5 终态）
+   - `rework_orders`（8 态 / 14 边 + 2 入口 / 3 终态）
+   - `notification_tasks`（5 态 / 9 边 + 1 入口 / 1 终态）
+   说明：上表「边数」为按 `(from_status,to_status)` 统计的唯一字面边（合计 47）；
+   对应 `docs/DESIGN.md` 设计规则条目编号为 `A3–A17`、`B2–B7`、`C3–C10`、`D2–D8`
+   合计 36 条（`A15+B6+C8+D7`），两者为同一转移集的两种口径，勿混用。
 2. 严禁在本模块导入 `fastapi`（`Request` 或 `Response` 等），所有异常统一抛 `AppError`。
 3. 任何未列入合法转移表的变更一律抛出 `422 INVALID_STATE_TRANSITION`。
 4. 状态变更同事务维护数据库 `CHECK` 一致性、`I7`（写 `audit_logs`，严格 append-only）
@@ -78,7 +81,7 @@ __all__ = [
 ]
 
 # ──────────────────────────────────────────────────────────────────────
-# 4 套状态机合法转移图与终态集（29 态 / 36 合法边 / 11 终态）
+# 4 套状态机合法转移图与终态集（29 态 / 47 条 `(from,to)` 唯一边 / 11 终态）
 # ──────────────────────────────────────────────────────────────────────
 
 TICKET_INITIAL_STATES: Final[frozenset[str]] = frozenset(
