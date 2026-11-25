@@ -36,10 +36,10 @@
 
 ### 1.2 唯一底模与四端一致分辨率
 
-1. **唯一底模：`yolo26s.pt`**（`D-06` + `src/tomori/vision/trainer.py:99-103` `__post_init__` 硬校验，`base_model.name` 非 `yolo26s.pt` 直接 `ValueError`）：
+1. **唯一底模：`yolo26s.pt`**（`D-06` + `src/tomori/vision/trainer.py:99-102` `__post_init__` 硬校验，`base_model.name` 非 `yolo26s.pt` 直接 `ValueError`）：
    - 远端预拉盘 `/root/autodl-tmp/tomori/weights/yolo26s.pt` 实测 **`20,422,725` 字节**，`SHA256 = 646f8bc3fe0a656803d95c294f7852321748cb29d13466a1af8862e2db384a1b`，加载实测 `detect 80 classes`（COCO 预训练）。
    - **架构源码实核**（`.venv/.../ultralytics/cfg/models/26/yolo26.yaml:8-52`）：`end2end: True`、`reg_max: 1`（DFL-free 直接坐标回归）、`scales.s = [depth=0.50, width=0.50, max_channels=1024]`（260 层 / `10,009,784` 参数 / `22.8 GFLOPs` @ 640；注：`max_channels=1024` 为模型通道数上限，非输入图像分辨率）；Backbone 采用 `Conv` + `C3k2` + `SPPF` + `C2PSA`（层 0–10），Head 采用 PAN-FPN 多尺度特征融合（P3/8、P4/16、P5/32，层 11–22）接双头 `Detect`（层 23，分类分支采用 `DWConv` 深度可分离卷积，`nn/modules/head.py:130-137`；`ultralytics==8.4.216` 中不存在 `Detect26` 类，检测任务直接复用 `Detect` `head.py:38`）。
-2. **唯一分辨率：`imgsz=1280`（`2×640`，`40×32` 步长整除）**（`D-28` + `config.py:19` + `trainer.py:47, 82-86` 硬校验）：
+2. **唯一分辨率：`imgsz=1280`（`2×640`，`40×32` 步长整除）**（`D-28` + `config.py:19` + `trainer.py:44` `_DEFAULTS`、`:70` 字段、`:104-108` `__post_init__` 硬校验）：
    - **训练（`1280`）→ 验证（`1280`）→ ONNX 导出（`imgsz=1280, dynamic=False`）→ 本地 `.env` 推理（`YOLO_IMG_SIZE=1280`）** 四端必须严格同值。
    - 导出后固化静态输入 **`[1, 3, 1280, 1280]`**、输出仍为 **`[1, 300, 6]`**（`max_det=300`，由 `Detect.postprocess` 的 `get_topk_index(..., max_det=300)` 固定，`head.py:83, 249-288`），本地 `onnxruntime.InferenceSession` 启动校验形状不符即抛 `INVALID_ARGUMENT`（`src/tomori/vision/client.py:289-308`）。
    - **从 `1024` 升级至 `1280` 的几何与官方基准依据**（详见 `.team/notes/vision-dev/logs/research-1280-epochs500.md` 与 `§2.2` 实测）：
@@ -90,7 +90,7 @@
 > *另备查大类排雷（`.team/notes/vision-dev/dataset-expansion-survey.md` §3.1–§3.3）*：`EPDCL/pd-defect` 等 7 个电力架空线水泥杆集、`Smartathon` 全系（`BAD_STREETLIGHT` 仅 `1–7` 框且含 `CC BY-NC-SA`）、`YDLD`（`CC BY-NC-ND 4.0` 禁止衍生且仅光源框）与 `geopagedev` 等纯健康杆体/井盖/路牌集均已核实排除。
 >
 > **`OCCLUDED` 独源偏态、`ext_pwd_s9` 同源泛化与 `D-18` 破损检出率三条诚实边界**：
-> 1. **`OCCLUDED` 类已按 `D-41` 明确弃用（`nc=3`）**：遍查 Hugging Face、Roboflow Universe、Kaggle、GitHub、Zenodo、Figshare、Mendeley Data、IEEE DataPort 后确认，`d1` 原始 `235` 框（`merged_v5` 保留 `227` 框 / `205` 图）为全网唯一公开路灯遮挡框源；`task-158`/`task-161` 逐帧画框复核 `~95%` 为**错标**（楼窗亮块、传感器/设备盒、树叶遮挡、高架桥灯臂非「枝叶遮挡灯头」语义）；`streetlight_v1` `best.pt` 自证重标（`conf>=0.65`/`IoU>=0.1`）救回 `39` 框改判 `on`（`~22%`），其余 `188` 框删除——**`occluded` 不进入 `merged_v7` 训练与评测**（`API` `fault_type=OCCLUDED` 保留为巡查员手工报障）。`merged_v5` 阶段曾按「`occluded` 双集 `≥30`」硬约束切出 `train 51.54% / val 14.54% / test 33.92%`（`56.92pp` 结构性下限）；后续合成遮挡与阶段二自采是仅存补全路径；
+> 1. **`OCCLUDED` 类已按 `D-41` 明确弃用（`nc=3`）**：遍查 Hugging Face、Roboflow Universe、Kaggle、GitHub、Zenodo、Figshare、Mendeley Data、IEEE DataPort 后确认，`d1` 源 `235` 框（`merged_v5` 合并 `227` 框，`8` 去重损失 / `205` 图）为全网唯一公开路灯遮挡框源；`task-158`/`task-161` 逐帧画框复核 `~95%` 为**错标**（楼窗亮块、传感器/设备盒、树叶遮挡、高架桥灯臂非「枝叶遮挡灯头」语义）；`streetlight_v1` `best.pt` 自证重标（`conf>=0.65`/`IoU>=0.1`）救回 `39` 框改判 `on`（`~22%`），其余 `188` 框删除——**`occluded` 不进入 `merged_v7` 训练与评测**（`API` `fault_type=OCCLUDED` 保留为巡查员手工报障）。`merged_v5` 阶段曾按「`occluded` 双集 `≥30`」硬约束切出 `train 51.54% / val 14.54% / test 33.92%`（`56.92pp` 结构性下限）；后续合成遮挡与阶段二自采是仅存补全路径；
 > 2. **`ext_pwd_s9` 仍非独立第三方来源（不得夸大域泛化）**：`ext_pwd_s9` 与 `ext_pwd_s6`、`ext_pwd_s1`、`ext_prj_n_8` 同属 **NHAI（印度国家公路局）公路巡查数据集体系**，跨源去重已拦下 `43` 张 SHA256 完全重复 + `3` 张 pHash 近重复图。并入后高清灯头破损图虽由 `154` 增至 `207`（`+34.4%`），但**仍属同一公路走廊采集域，不得据此宣称跨地域/跨城市场景的域泛化能力提升**；
 > 3. **`D-18` 破损类承诺边界**：`streetlight_damaged` 的 `6` 个来源 100% 为单图组（无 `video_id` 原子约束），`merged_v5` 可实现 `80.04% / 9.98% / 9.98%` 近精确分层（偏差和仅 **`0.08pp`**）；`merged_v6`/`merged_v7` 对 `damaged` `1,423` 框**全保留**（无启发式删滤）；主动剔除 `d7` 与 `ext_civic_broken` 后净留 `1,423` 个高纯度框，仍遵守 `D-18` 不在阶段二前置承诺具体破损检出率指标。
 
@@ -142,7 +142,7 @@
 
 #### 2. `merged_v5`（`nc=4`，已存档对照）终版切分结果：`80/10/10` 组+单图混合按类分层装箱（零断崖，三集全非零）
 
-**切分算法（`dataset_prep.py:1143-1440`，`method = "group+single lexicographic stratified bin-packing"`）**：四键 Union-Find 先建防泄漏原子组 → 预增广组硬锁 `train` → 可入集**多图组**按「含最稀有类框数 → 组大小」降序截取 **`_SPLIT_ENUM_LIMIT=12`**（`:149`）做 `3^k` 全枚举（实测 `combos_evaluated=59,049` / `combos_feasible=26,244`）→ 其余**单图组**按稀有度加权贪心逐组填充；字典序目标：① 硬约束（所有存在类别三集非零 + `occluded` 全库 `≥60` 框时 `val`/`test` 各 `≥ _OCCLUDED_MIN_PER_SPLIT=30`，`:151`）→ ② `min Σ|类框数占比-ratio|` → ③ `min Σ|图数占比-ratio|` → ④ 决胜「大 `occluded` 组 → `test`」。
+**切分算法（`dataset_prep.py:1271-1585`，`method = "group+single lexicographic stratified bin-packing"`）**：四键 Union-Find 先建防泄漏原子组 → 预增广组硬锁 `train` → 可入集**多图组**按「含最稀有类框数 → 组大小」降序截取 **`_SPLIT_ENUM_LIMIT=12`**（`:149`）做 `3^k` 全枚举（实测 `combos_evaluated=59,049` / `combos_feasible=26,244`）→ 其余**单图组**按稀有度加权贪心逐组填充；字典序目标：① 硬约束（所有存在类别三集非零 + `occluded` 全库 `≥60` 框时 `val`/`test` 各 `≥ _OCCLUDED_MIN_PER_SPLIT=30`，`:151`）→ ② `min Σ|类框数占比-ratio|` → ③ `min Σ|图数占比-ratio|` → ④ 决胜「大 `occluded` 组 → `test`」。
 
 | Split | 图数 | 占比 | 目标 | 偏差 | 总框数 | `on` | `off` | **`damaged`** | **`occluded`** | `damaged` 6 源覆盖 (`d3 / s6 / s9 / s1 / prj_n_8 / infras` 图数) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
@@ -235,25 +235,25 @@ _single_groups                        -> train 1,063 / val 61 / test 129
 
 > **`nc=3` 当前训练类表（`merged_v7`）**：`names = [streetlight_on, streetlight_off, streetlight_damaged]`；`streetlight_occluded` 已按 `D-41` 弃用（`API` `fault_type=OCCLUDED` 保留手工报障兼容），下表保留为映射参考。
 
-| 训练/推理类别 ID | 标准类名（`TARGET_NAMES`） | `d1` / `d4` / NHAI 典型原标映射 | `SOURCE_CLASS_ALIASES` 核心别名（`dataset_prep.py:88-130`） | 后端业务映射与安全边界（`src/tomori/vision/mapping.py`） |
+| 训练/推理类别 ID | 标准类名（`TARGET_NAMES`） | `d1` / `d4` / NHAI 典型原标映射 | `SOURCE_CLASS_ALIASES` 核心别名（`dataset_prep.py:89-131`） | 后端业务映射与安全边界（`src/tomori/vision/mapping.py`） |
 |---:|---|---|---|---|
 | **`0`** | `streetlight_on` | `d1`: `0` (`lamp_on`)；`d4`: `Working→0` | `streetlight_on`, `lamp_on`, `working`, `on`, `lit`, `good_light` | **夜间/黄昏**：按 **`D-30` 定案**回传前端作参照框（`visual_signal_state="NORMAL_LIT"`, `is_fault_candidate=false`）；**白天**强亮疑似常亮→`OTHER`（`is_fault_candidate=true`），弱信号抑制 |
 | **`1`** | `streetlight_off` | `d1`: `1` (`lamp_off`)；`d4`: `Not Working→1` | `streetlight_off`, `lamp_off`, `not_working`, `non_working`, `off`, `unlit` | **夜间/黄昏**→`LAMP_OUT`（`is_fault_candidate=true`）；**白天**受昼夜物理边界抑制（`DAYTIME_UNPOWERED_EXPECTED`, `is_fault_candidate=false`） |
 | **`2`** | `streetlight_damaged` | `d3`: `Damaged→2`；NHAI: `DAMAGED-STREET-LIGHT→2`；`infras`: `broken-streetlamp→2` | `streetlight_damaged`, `damaged`, `broken_light`, `broken_lamp`, `defective_lamp`, `fallen_pole` | 昼/夜均映射为 `FIXTURE_DAMAGED`（`is_fault_candidate=true`） |
 | **`3`** | `streetlight_occluded`（`merged_v7` 已弃用） | `d1`: **`2`**（`lamp_occluded`） | `streetlight_occluded`, `lamp_occluded`, `occluded`, `obstructed_lamp` | 昼/夜均映射为 `OCCLUDED`（`is_fault_candidate=true`；`merged_v7`/`streetlight_v3` 模型不产出，仅 `API` 手工报障兼容——`D-41`/`task-165`） |
 
-> **`V3` 训练标签防污染门禁**：静态图模型**永不定义也永不训练** `FLICKERING`（需多帧视频时序）与 `ELECTRIC_HAZARD`（需现场断电检测）。`mapping.py:51-58, 149-170` 与 `contract.py:49` 在输出与校验两层拦截这两类词汇并直接抛错。
+> **`V3` 训练标签防污染门禁**：静态图模型**永不定义也永不训练** `FLICKERING`（需多帧视频时序）与 `ELECTRIC_HAZARD`（需现场断电检测）。`mapping.py:51-57` `_FORBIDDEN_RAW_CLASS_ALIASES` + `mapping.py:149-175` `_normalize_raw_class` 与 `contract.py:52` `FORBIDDEN_FAULT_TYPES` 在输出与校验两层拦截这两类词汇并直接抛错。
 >
-> **健康杆体/无关类防猜类红线**：`dataset_prep.py:86-87` 严禁把 `pole`、`utility_pole`、`street_light`、`normal` 等泛化类名自动猜映射到 `streetlight_damaged`；未在显式映射与 `SOURCE_CLASS_ALIASES` 中的类别默认显式 **`DROP`** 并记入 `dropped_classes_counts`。
+> **健康杆体/无关类防猜类红线**：`dataset_prep.py:86-87`（`SOURCE_CLASS_ALIASES` 上方防猜类注释）严禁把 `pole`、`utility_pole`、`street_light`、`normal` 等泛化类名自动猜映射到 `streetlight_damaged`；未在显式映射与 `SOURCE_CLASS_ALIASES` 中的类别默认显式 **`DROP`** 并记入 `dropped_classes_counts`。
 
 ### 2.4 多源 ETL 引擎能力、两处已修 Bug 与 13 项防泄漏流水线（`dataset_prep.py` + `eda.py`）
 
-#### 1. `src/tomori/vision/dataset_prep.py`（`2,056` → **`2,220`** 行，`task-162`/`task-165` 追加 `_clean_samples`/`_out_names`）多源异构归一化流水线
+#### 1. `src/tomori/vision/dataset_prep.py`（`2,056` → **`2,220`** 行，`task-162`/`task-165` 追加 `_clean_samples`/`_out_names`/`--drop-occluded`）多源异构归一化流水线
 
 ```text
 多源异构目录 (YOLO 5列 / YOLO Polygon / COCO JSON / Pascal VOC XML + metadata.csv)
    │
-   ├─► [1] N1 视频红线与坏图守卫 (dataset_prep.py:58-72, 1504-1514)
+   ├─► [1] N1 视频红线与坏图守卫 (dataset_prep.py:58-72 `VIDEO_EXTENSIONS` 常量区)
    │       跳过 12 种视频/流扩展名 (.mp4/.mov/.avi/.mkv/.flv/.webm/.m4v/.ts/.mpg/.mpeg/.wmv/.m3u8)
    │       仅放行 {.jpg, .jpeg, .png, .webp}；bad/empty 计入 skipped_corrupt_or_empty
    │
@@ -282,7 +282,7 @@ _single_groups                        -> train 1,063 / val 61 / test 129
    │       字典序目标：① 三集各类非零 + occluded≥60 时双集各 ≥30 (_OCCLUDED_MIN_PER_SPLIT, :151)
    │                    → ② min Σ|类框数占比-ratio| → ③ min Σ|图数占比-ratio| → ④ 大 occluded 组进 test
    │
-   ├─► [6] `data.yaml`/`names`/`nc`/`target_names`/`config` 按 `_out_names` 写 `nc=3`/`4`（`:1805, :1930-1934`）
+   ├─► [6] `data.yaml`/`names`/`nc`/`target_names`/`config` 按 `_out_names` 写 `nc=3`/`4`（`:1804-1806, :1925-1938`）
    │
    └─► [7] 13 项跨 split 交集=0 硬守卫 → 任一 > 0 直接 raise RuntimeError!
            输出：data.yaml + prep_manifest.json + images/{train,val,test} + labels/{train,val,test}
@@ -309,22 +309,22 @@ _single_groups                        -> train 1,063 / val 61 / test 129
 | 超参数 | `trainer.py` 值（来源坐标） | `default.yaml` 原值 | 实际生效行为 & 设计依据 |
 |---|---|---|---|
 | **`imgsz`** | **`1280`**（`config.py:19`, `trainer.py:44` `_DEFAULTS`、`:70` 字段、`:104-108` `__post_init__` 硬锁定） | `640`（`:16`） | **显式覆盖**。`2×640` 步长整除，对 `merged_v5` `59.88%` `1280×720` 众数图实现 `1:1` 零下采样；`__post_init__` 强拒非 `1280`，守 `D-28` 四端一致 |
-| **`batch`** | **`8`**（`trainer.py:47` `_DEFAULTS`、`:73` 字段、`:115-116` `>=1` 硬校验、CLI `:654-659`） | `16`（`:15`） | **固定整数（`task-133` 起 AutoBatch 全链删除）**。`floor_power_of_two`/`_resolve_batch_size`/`--batch -1`/`fallback_batch`/`probed_batch` 已删——按 `RTX 4080 SUPER @ 1280` 只读 dummy 探针峰值 `12,028 MiB`（`batch=8`）与 `23,396 MiB`（`batch=16`）实测给死 **`8`**；换卡或调值须重跑探针后改 `_DEFAULTS` 或传 `--batch`（`task-74` 首训实跑 `--batch 24`，`~30.8GB`，见 `§6.3.1`） |
-| **`epochs`** | **`500`**（`trainer.py:45` `_DEFAULTS`、`:71` 字段、主训 `:393`） | `100`（`:12`） | **显式覆盖**。扩大训练上限并交由 `patience=20` 控制停止轮次；对 LR 退火、`close_mosaic` 与 `E2ELoss` 的耦合风险及代码对冲见 `§3.1` |
-| **`patience`** | **`20`**（`trainer.py:46` `_DEFAULTS`、`:72` 字段、主训 `:394`） | `100`（`:14`） | **显式覆盖**。连续 `20` 轮验证集 `mAP50-95` 未严格刷新历史最佳即触发 `EarlyStopping`（`utils/torch_utils.py:1120-1169`） |
-| **`nms`** | **训练/权威评估/导出传 `False`；对照评估传 `None`**（`_train_kwargs` `:347`（主训 `:391` 与精修 `:428` 共用注入）、权威 `val` `:458`、对照 `val` `:469`、对照 `test` `:482`、权威 `test` `:491`、导出 `:502`；写入 `metrics.json` 顶层 `:540` 与 `train_config` `:576`） | `None`（`:61`，`None`=外接 NMS `one2many`；`False`=无 NMS `one2one` 端到端；`True`=导出内嵌 NMS） | **显式锁定 `False`（使「早停判据头 == 部署头」）**。`default.yaml:61` 的 `None` 会令训练期 `BaseValidator.__call__`（`engine/validator.py:240-242`）设 `model.end2end = False`，使 `EarlyStopping` 全程监控 `one2many` 头而与 `export(..., nms=False)` 的 `one2one` 交付物错位；`trainer.py` 主训与权威 `val`/`test`/导出全链路显式锁 `nms=False`（`one2one` 端到端），仅对照 `val`/`test`（`:469, :482`）显式传 `nms=None` 作诊断参考（因 `_reset_ckpt_args` 会在加载 `.pt` 时丢弃 `nms`，见 `§3.1` 第 1 条） |
-| **`optimizer`** | **`"auto"`**（`trainer.py:48` `_DEFAULTS`、`:76` 字段、`_train_kwargs` `:327`） | `"auto"`（`:27`） | **需警惕 `epochs=500` 触发切分界**：`BaseTrainer.build_optimizer()`（`engine/trainer.py:1232-1241`）在 `optimizer="auto"` 时**忽略传入的 `lr0=0.01`**，按 `iterations = ceil(N_train / max(batch, 64)) * epochs > 10000` 切换 **`MuSGD(lr=0.01, momentum=0.9)`**（分类头 `cv3`/`one2one_cv3` 为 `0.03`），否则选 `AdamW(lr_fit = round(0.002*5/(4+nc), 6), momentum=0.9)`（`nc=4` 时 `0.00125`、`nc=3` 时 `0.00143`），`warmup_bias_lr` 置 `0.0` |
-| **`lr0`** | `0.01`（`trainer.py:49` `_DEFAULTS`、`:77` 字段、主训 `:395`） | `0.01`（`:95`） | 传入兼容字段（显式指定非 `auto` 优化器时生效）；`optimizer="auto"` 下由上述 `build_optimizer()` 接管；若开启 `--mosaic-polish-epochs` 则二阶段降为 `lr0 * 0.2` |
-| **`lrf`** | **`0.01`**（`trainer.py:50` `_DEFAULTS`、`:78` 字段、主训 `:396` **显式写入**） | `0.01`（`:96`） | **显式写入配置与诊断**。末期学习率比例 `lr_final = lr0 * lrf`；当 `epochs=500` 提前早停时用于 `early_stopping_diagnostics` 精确核算残余 LR |
-| **`cos_lr`** | **`False`**（`trainer.py:79` 字段 + `_train_kwargs` `:328` **显式写入**） | `False`（`:33`） | **显式锁定线性衰减**。在可能提前早停的 `epochs=500` 设定下禁止开 `cos_lr=True`（余弦前段极慢衰减，第 60/500 轮仍留 `96.64%` LR，加剧高学习率震荡，详见 `§3.1`） |
-| **`mosaic_polish_epochs`** | **`0`**（`trainer.py:81` 字段、`:421-445` 精修块、CLI `:666` `--mosaic-polish-epochs`） | *项目扩展* | **默认关闭（`0`），按需启用两阶段收尾**。若第一阶段在第 `491` 轮前早停导致 `close_mosaic=10` 未触发，显式传入 `--mosaic-polish-epochs N` 会基于 `best.pt` 执行 `N` 轮无 Mosaic（`mosaic=0.0, mixup=0.0, copy_paste=0.0, lr0*0.2, lrf=0.05, cos_lr=True, nms=False`）短微调 |
+| **`batch`** | **`8`**（`trainer.py:47` `_DEFAULTS`、`:73` 字段、`:115-116` `>=1` 硬校验、CLI `:669-674`） | `16`（`:15`） | **固定整数（`task-133` 起 AutoBatch 全链删除）**。`floor_power_of_two`/`_resolve_batch_size`/`--batch -1`/`fallback_batch`/`probed_batch` 已删——按 `RTX 4080 SUPER @ 1280` 只读 dummy 探针峰值 `12,028 MiB`（`batch=8`）与 `23,396 MiB`（`batch=16`）实测给死 **`8`**；换卡或调值须重跑探针后改 `_DEFAULTS` 或传 `--batch`（`task-74` 首训实跑 `--batch 24`，`~30.8GB`，见 `§6.3.1`） |
+| **`epochs`** | **`500`**（`trainer.py:45` `_DEFAULTS`、`:71` 字段、主训 `:404`） | `100`（`:12`） | **显式覆盖**。扩大训练上限并交由 `patience=20` 控制停止轮次；对 LR 退火、`close_mosaic` 与 `E2ELoss` 的耦合风险及代码对冲见 `§3.1` |
+| **`patience`** | **`20`**（`trainer.py:46` `_DEFAULTS`、`:72` 字段、主训 `:405`） | `100`（`:14`） | **显式覆盖**。连续 `20` 轮验证集 `mAP50-95` 未严格刷新历史最佳即触发 `EarlyStopping`（`utils/torch_utils.py:1120-1169`） |
+| **`nms`** | **训练/权威评估/导出传 `False`；对照评估传 `None`**（`_train_kwargs` `:347`（主训 `:391` 与精修 `:428` 共用注入）、权威 `val` `:458`、对照 `val` `:469`、对照 `test` `:482`、权威 `test` `:491`、导出 `:502`；写入 `metrics.json` 顶层 `:555` 与 `train_config` `:591`） | `None`（`:61`，`None`=外接 NMS `one2many`；`False`=无 NMS `one2one` 端到端；`True`=导出内嵌 NMS） | **显式锁定 `False`（使「早停判据头 == 部署头」）**。`default.yaml:61` 的 `None` 会令训练期 `BaseValidator.__call__`（`engine/validator.py:240-242`）设 `model.end2end = False`，使 `EarlyStopping` 全程监控 `one2many` 头而与 `export(..., nms=False)` 的 `one2one` 交付物错位；`trainer.py` 主训与权威 `val`/`test`/导出全链路显式锁 `nms=False`（`one2one` 端到端），仅对照 `val`/`test`（`:469, :482`）显式传 `nms=None` 作诊断参考（因 `_reset_ckpt_args` 会在加载 `.pt` 时丢弃 `nms`，见 `§3.1` 第 1 条） |
+| **`optimizer`** | **`"auto"`**（`trainer.py:48` `_DEFAULTS`、`:76` 字段、`_train_kwargs` `:336`） | `"auto"`（`:27`） | **需警惕 `epochs=500` 触发切分界**：`BaseTrainer.build_optimizer()`（`engine/trainer.py:1232-1241`）在 `optimizer="auto"` 时**忽略传入的 `lr0=0.01`**，按 `iterations = ceil(N_train / max(batch, 64)) * epochs > 10000` 切换 **`MuSGD(lr=0.01, momentum=0.9)`**（分类头 `cv3`/`one2one_cv3` 为 `0.03`），否则选 `AdamW(lr_fit = round(0.002*5/(4+nc), 6), momentum=0.9)`（`nc=4` 时 `0.00125`、`nc=3` 时 `0.00143`），`warmup_bias_lr` 置 `0.0` |
+| **`lr0`** | `0.01`（`trainer.py:49` `_DEFAULTS`、`:77` 字段、主训 `:406`） | `0.01`（`:95`） | 传入兼容字段（显式指定非 `auto` 优化器时生效）；`optimizer="auto"` 下由上述 `build_optimizer()` 接管；若开启 `--mosaic-polish-epochs` 则二阶段降为 `lr0 * 0.2` |
+| **`lrf`** | **`0.01`**（`trainer.py:50` `_DEFAULTS`、`:78` 字段、主训 `:407` **显式写入**） | `0.01`（`:96`） | **显式写入配置与诊断**。末期学习率比例 `lr_final = lr0 * lrf`；当 `epochs=500` 提前早停时用于 `early_stopping_diagnostics` 精确核算残余 LR |
+| **`cos_lr`** | **`False`**（`trainer.py:79` 字段 + `_train_kwargs` `:337` **显式写入**） | `False`（`:33`） | **显式锁定线性衰减**。在可能提前早停的 `epochs=500` 设定下禁止开 `cos_lr=True`（余弦前段极慢衰减，第 60/500 轮仍留 `96.64%` LR，加剧高学习率震荡，详见 `§3.1`） |
+| **`mosaic_polish_epochs`** | **`0`**（`trainer.py:81` 字段、`:432-456` 精修块、CLI `:681` `--mosaic-polish-epochs`） | *项目扩展* | **默认关闭（`0`），按需启用两阶段收尾**。若第一阶段在第 `491` 轮前早停导致 `close_mosaic=10` 未触发，显式传入 `--mosaic-polish-epochs N` 会基于 `best.pt` 执行 `N` 轮无 Mosaic（`mosaic=0.0, mixup=0.0, copy_paste=0.0, lr0*0.2, lrf=0.05, cos_lr=False`（`polish_kwargs.update` 覆盖 `_train_kwargs` 中的 `cfg.cos_lr=False`，`2ab866f` 去重修复）, nms=False`）短微调 |
 | **`warmup_epochs`** | *未传*（沿用默认） | **`3.0`**（`:99`） | 前 3 个 epoch 线性预热（`warmup_momentum=0.8`），缓解刚替换 4 类检测头初期的梯度冲击 |
 | **`weight_decay`** | *未传*（沿用默认） | **`0.0005`**（`:98`） | 沿用 L2 正则默认强度，抑制稀疏故障类别过拟合 |
-| **`amp`** | **`True`**（`trainer.py:75` 字段 + `_train_kwargs` `:326`） | `True`（`:36`） | RTX 4080 SUPER（Ada Lovelace Tensor Core）原生高效支持 FP16 AMP 训练与显存压缩，保留开启；CLI `:673` 提供 `--no-amp` 应急开关 |
+| **`amp`** | **`True`**（`trainer.py:75` 字段 + `_train_kwargs` `:335`） | `True`（`:36`） | RTX 4080 SUPER（Ada Lovelace Tensor Core）原生高效支持 FP16 AMP 训练与显存压缩，保留开启；CLI `:688` 提供 `--no-amp` 应急开关 |
 | **`box` / `cls` / `dfl`** | *未传*（沿用默认） | **`7.5` / `0.5` / `1.5`**（`:104-107`） | **YOLO26 特殊机制核实**（`tasks.py:651`、`loss.py:125,146-163,374-375,1324-1356`）：YOLO26 使用 **`E2ELoss`**（`o2m` `tal_topk=10` 权重从 `0.8` 线性降至 `0.1` + `o2o` `tal_topk=7→1` 权重从 `0.2` 升至 `0.9`）；虽 `reg_max=1` 旁路了 DFL 积分层（日志记 `l1_loss`），**`dfl=1.5` 仍真实加权归一化 `ltrb` L1 框距离损失** |
 | **`nbs`** | *未传*（沿用默认） | **`64`**（`:115`） | 名义批大小；`batch=8` 时 Ultralytics 按 `round(64 / 8) = 8` 自动做梯度累积对齐优化步频 |
-| **`seed` / `deterministic`** | **`42`** / **`True`**（`trainer.py:57` `_DEFAULTS`、`:90-91` 字段、`_train_kwargs` `:338-339`） | `0` / `True`（`:29-30`） | 与 `dataset_prep.py`、`eda.py` 默认 `seed=42` 统一，确保数据切分、抽样与训练可复现 |
-| **`workers`** | **`8`**（`trainer.py:52` `_DEFAULTS`、`:92` 字段、`_train_kwargs` `:340`） | `8`（`:21`） | 远端高核 CPU 容器 `workers=8` 高效预取（`1280` 解码不卡 GPU） |
+| **`seed` / `deterministic`** | **`42`** / **`True`**（`trainer.py:57` `_DEFAULTS`、`:90-91` 字段、`_train_kwargs` `:347-348`） | `0` / `True`（`:29-30`） | 与 `dataset_prep.py`、`eda.py` 默认 `seed=42` 统一，确保数据切分、抽样与训练可复现 |
+| **`workers`** | **`8`**（`trainer.py:52` `_DEFAULTS`、`:92` 字段、`_train_kwargs` `:349`） | `8`（`:21`） | 远端高核 CPU 容器 `workers=8` 高效预取（`1280` 解码不卡 GPU） |
 
 ### 3.1 `epochs=500 + patience=20` 源码机制与早停风险对冲（`ultralytics==8.4.216`）
 
@@ -339,7 +339,7 @@ _single_groups                        -> train 1,063 / val 61 / test 129
      - **`engine/exporter.py:795-797`**：导出时执行 `model.end2end = self.args.nms is False or (...)`，当 `nms=False` 时强制保留 `one2one` 端到端头；
      - **`cfg/default.yaml:61`（`DEFAULT_CFG_DICT["nms"] is None`）** → 若 `model.train()` 不传 `nms`，早停全程只监控 `one2many` 头，与 `export(nms=False)` 的 `one2one` 交付物错位；
      - **`engine/model.py:1150-1171` `_reset_ckpt_args` 只保留 `{"imgsz", "data", "task", "single_cls"}`**，`nms` 在加载 `.pt` 权重时被丢弃 → 独立 `best_model.val()` 必须显式传 `nms=`，否则回退 `default.yaml` 的 `None`（`one2many`）；
-     - **`src/tomori/vision/trainer.py` 全链路落地坐标（`task-133` 瘦身后再核实）**：`_train_kwargs` `:347` 的 `"nms": False` 被主训 `model.train`（`:391`）与精修 `polish_model.train`（`:428`）共用注入；权威验证 `best_model.val(split="val", nms=False, plots=True)`（`:458`）、对照验证 `best_model.val(split="val", nms=None, plots=False)`（`:469`）、`test` `nms=None`（`:482`）/`test` `nms=False`（`:491`）、`export(..., nms=False)`（`:502`）。由此实现训练早停判据、权威验证/测试评估与 `best_e2e.onnx` 交付物严格同走 **`one2one` 端到端头**。
+     - **`src/tomori/vision/trainer.py` 全链路落地坐标（`task-133` 瘦身后再核实）**：`_train_kwargs` `:347` 的 `"nms": False` 被主训 `model.train`（`:391`）与精修 `polish_model.train`（`:428`）共用注入；权威验证 `best_model.val(split="val", nms=False, plots=True)`（`:458`）、对照验证 `best_model.val(split="val", nms=None, plots=False)`（`:469`）、`test` `nms=None`（`:482`）/`test` `nms=False`（`:491`）、`export(..., nms=False)`（`:517`）。由此实现训练早停判据、权威验证/测试评估与 `best_e2e.onnx` 交付物严格同走 **`one2one` 端到端头**。
 2. **LR 退火滞后效应（`engine/trainer.py:270-276, 472, 503-508`）**：
    - `BaseTrainer._do_train` 在每轮 batch 前执行 `scheduler.step()`（`last_epoch` 从 `-1` 推进到 `epoch = ep - 1`），故 1-based 第 `ep` 轮实际生效 `LR/LR0 = self.lf(ep - 1)`。
    - 在 `epochs=500, lrf=0.01` 下，若于第 **`40 / 60 / 80 / 100 / 150`** 轮早停，线性衰减（`cos_lr=False`）剩余 LR 仍高达 **`92.28% / 88.32% / 84.36% / 80.40% / 70.50%`**；若开启 `cos_lr=True` 则更高达 **`98.52% / 96.64% / 94.03% / 90.73% / 79.85%`**（说明为何本项目锁死 `cos_lr=False` 且不宜依赖调小 `lrf`）。
@@ -363,14 +363,14 @@ _single_groups                        -> train 1,063 / val 61 / test 129
 | `500`（跑满） | `1.20%` | `1.00%` | `0.100 / 0.900` | ✅ 第 `491–500` 轮触发 |
 
 6. **项目已落地的代码级对冲（`src/tomori/vision/trainer.py`）**：
-   - **自动调度诊断审计（`trainer.py:288-311, :592-598`）**：`_schedule_diagnostics()` 根据实际 `stopped_epoch` 精确计算并写入 `metrics.json` 的 **`early_stopping_diagnostics`** 字段（`stopped_epoch`、`early_stopped`、`lr_remaining_ratio`、`close_mosaic_trigger_epoch`、`close_mosaic_triggered`、`e2e_loss_o2m_weight`、`e2e_loss_o2o_weight`），供训后审计与双头对比决策；
-   - **可选两阶段无 Mosaic 短微调（`trainer.py:81` 字段、`:421-445` 执行块、CLI `:666`）**：当启用 **`--mosaic-polish-epochs N`**（如 `10` 或 `15`）且第一阶段于第 `491` 轮之前早停（`(stopped_epoch_1based - 1) < (cfg.epochs - cfg.close_mosaic)`）时，自动加载第一阶段 `best.pt` 在 `{run_name}_polish` 执行 `N` 轮干净单图收尾（`patience=0`、`lr0 = cfg.lr0 * 0.2`、`lrf=0.05`、`cos_lr=True`、`mosaic=0.0`、`mixup=0.0`、`copy_paste=0.0`，`nms=False` 经 `_train_kwargs` `:347` 注入，保留 `flipud=0.0`/`hsv_v<=0.25`/`hsv_s<=0.4`/`fliplr`/`degrees`），随后以精修后的 `best.pt` 进入双头 `val`/`test` 评估与 ONNX 导出。**`task-133` 瘦身取舍说明**：该补救覆盖「早停于 `close_mosaic` 触发前致 Mosaic 永不收敛」的真实失效模式，与 `--export-only`（`best.pt` 不重训复跑导出+校验）、`--no-amp`（AMP `nan` 等异常调试开关）同为有实测依据的功能，非透传冗余故保留。
+   - **自动调度诊断审计（`trainer.py:297-325, :607-612`）**：`_schedule_diagnostics()` 根据实际 `stopped_epoch` 精确计算并写入 `metrics.json` 的 **`early_stopping_diagnostics`** 字段（`stopped_epoch`、`early_stopped`、`lr_remaining_ratio`、`close_mosaic_trigger_epoch`、`close_mosaic_triggered`、`e2e_loss_o2m_weight`、`e2e_loss_o2o_weight`），供训后审计与双头对比决策；
+   - **可选两阶段无 Mosaic 短微调（`trainer.py:81` 字段、`:432-456` 执行块、CLI `:681`）**：当启用 **`--mosaic-polish-epochs N`**（如 `10` 或 `15`）且第一阶段于第 `491` 轮之前早停（`(stopped_epoch_1based - 1) < (cfg.epochs - cfg.close_mosaic)`）时，自动加载第一阶段 `best.pt` 在 `{run_name}_polish` 执行 `N` 轮干净单图收尾（`patience=0`、`lr0 = cfg.lr0 * 0.2`、`lrf=0.05`、`cos_lr=False`（`polish_kwargs.update` 覆盖，`2ab866f` 去重修复——原 `cos_lr=True` 显式传参与 `_train_kwargs` 重复导致 `TypeError`，修复后恒走 `cfg.cos_lr=False` 线性衰减）、`mosaic=0.0`、`mixup=0.0`、`copy_paste=0.0`，`nms=False` 经 `_train_kwargs` `:356` 注入，保留 `flipud=0.0`/`hsv_v<=0.25`/`hsv_s<=0.4`/`fliplr`/`degrees`），随后以精修后的 `best.pt` 进入双头 `val`/`test` 评估与 ONNX 导出。**`task-133` 瘦身取舍说明**：该补救覆盖「早停于 `close_mosaic` 触发前致 Mosaic 永不收敛」的真实失效模式，与 `--export-only`（`best.pt` 不重训复跑导出+校验）、`--no-amp`（AMP `nan` 等异常调试开关）同为有实测依据的功能，非透传冗余故保留。
 
 ---
 
 ## 4. 数据增广方法与公共照明领域禁区（为什么这样配）
 
-夜间/黄昏道路照明故障检测与通用 COCO 自然场景存在**三个物理刚性约束**（空间朝向固定、亮度/色温即故障核心信号、高空远距灯头极小）。`src/tomori/vision/trainer.py:81-89, :110-114` 对此实施硬编码守卫：
+夜间/黄昏道路照明故障检测与通用 COCO 自然场景存在**三个物理刚性约束**（空间朝向固定、亮度/色温即故障核心信号、高空远距灯头极小）。`src/tomori/vision/trainer.py:85-89, :109-114` 对此实施硬编码守卫：
 
 | 增强参数 | `trainer.py` 设定（守卫） | `default.yaml` 默认 | 设计依据与公共照明领域红线 |
 |---|---|---|---|
@@ -382,7 +382,7 @@ _single_groups                        -> train 1,063 / val 61 / test 129
 | **`degrees`** | **`5.0`**（`trainer.py:56` `_DEFAULTS`、`:87` 字段） | `0.0`（`:119`） | **主动开启微旋转（±5°）**：手持手机/车载斜拍常见相机轻微横滚倾角，覆盖真实巡查姿态而不破坏天地方向 |
 | **`translate` / `scale`** | *未传*（沿用默认） | **`0.1` / `0.5`**（`:120-121`） | 允许 ±10% 平移与 `[0.5, 1.5]` 尺度变化，模拟巡查员不同距离（近杆 vs 远距连排灯）拍摄 |
 | **`shear` / `perspective` / `bgr`** | *未传*（沿用默认） | `0.0` / `0.0` / `0.0`（`:122-126`） | 暂不加剪切与透视畸变；禁用 `bgr` 通道反转以保留钠灯暖黄 vs 天空冷蓝色彩特征 |
-| **`mosaic` / `close_mosaic`** | **`0.8`** / **`10`**（`trainer.py:51` `_DEFAULTS`（`close_mosaic`）、`:82` `mosaic` 字段、`:80` `close_mosaic` 字段、`_train_kwargs` `:329-330`） | `1.0` / `10`（`:34, 127`） | 由默认 `1.0` 适度降至 **`0.8`**（保留 `20%` 完整单图上下文学习整杆-天空尺度与昼夜全图光照分布）；`epochs=500` 下 `close_mosaic=10` 需第 `491` 轮触发，若早停未触发可通过 `--mosaic-polish-epochs`（`§3.1`）追加干净单图微调 |
+| **`mosaic` / `close_mosaic`** | **`0.8`** / **`10`**（`trainer.py:51` `_DEFAULTS`（`close_mosaic`）、`:82` `mosaic` 字段、`:80` `close_mosaic` 字段、`_train_kwargs` `:338-339`） | `1.0` / `10`（`:34, 127`） | 由默认 `1.0` 适度降至 **`0.8`**（保留 `20%` 完整单图上下文学习整杆-天空尺度与昼夜全图光照分布）；`epochs=500` 下 `close_mosaic=10` 需第 `491` 轮触发，若早停未触发可通过 `--mosaic-polish-epochs`（`§3.1`）追加干净单图微调 |
 | **`mixup`** | **`0.05`**（`trainer.py:83`） | `0.0`（`:128`） | 仅 **`5%`** 极轻度透明混合，少量提升背景复杂场景抗干扰，严禁高比例 MixUp 以免昼夜帧半透明叠加造成灯头亮灭语义模糊 |
 | **`copy_paste`** | **`0.15`**（`trainer.py:84`） | `0.0`（`:130`） | **策略占位（对纯 bbox 检测集在 `ultralytics==8.4.216` 下 100% no-op）**：实读 `.venv` `ultralytics/data/augment.py:1983-1986`，`CopyPaste.__call__()` 首行即判定 `if len(labels["instances"].segments) == 0 or self.p == 0: return labels`；虽 `dataset_prep.py` 可读入 `yolo_polygon` 并转为标准 YOLO 5 列框，但 `merged_v5` 落盘标注不含分割 mask（`segments` 为空），故本参数在当前检测训练期 100% 空转不生效（与 `trainer.py:84` 配置保留一致，仅作未来引入实例分割 mask 时的策略标记） |
 | **`val` / `test` 零增广** | 评估强制纯净输入 | — | 验证与测试阶段关闭一切合成增广，确保评估指标真实反映巡查原始图像表现 |
@@ -392,7 +392,7 @@ _single_groups                        -> train 1,063 / val 61 / test 129
 
 ## 5. ONNX 导出契约、评估指标与准入门禁
 
-### 5.1 双头离线验证/测试、`metrics.json` 键契约与 ONNX 导出（`trainer.py:451-630` & `exporter.py:795-1296`）
+### 5.1 双头离线验证/测试、`metrics.json` 键契约与 ONNX 导出（`trainer.py:467-632` & `exporter.py:795-1296`）
 
 1. **导出调用（必须显式传 `nms=False`）**：
    ```python
@@ -406,18 +406,18 @@ _single_groups                        -> train 1,063 / val 61 / test 129
    ```
    - **为什么必须显式写 `nms=False`**：实读 `ultralytics/engine/exporter.py:795-798` 证实，`nms=None`（默认）时 `model.end2end` 会被置为 `False`（回落 `one2many` 需外部 NMS 的 `(B, 4+nc, anchors)` 输出）；**只有 `nms=False`** 才在 `Detect.fuse()` 保留 `one2one` 头（`head.py:290-295`），导出 **`[1, 3, 1280, 1280] -> [1, 300, 6]`**（输出仍为 `[1, 300, 6]`，`max_det=300`，末维 `[x1, y1, x2, y2, score, class_id]`）。
    - **不硬写 `opset=17`**：沿用 Ultralytics `best_onnx_opset(onnx)` 自动选择安全版本（`utils/export/engine.py:62-86`，Torch `>=2.4` 下默认选 `opset 18`），`pyproject.toml` 声明 `"onnx>=1.16.0,<2.0.0"` 与 `"onnxslim>=0.1.82"`，严格满足 `exporter.py:1207`（`"onnx>=1.12.0,<2.0.0"`）与 `:1217`（`"onnxslim>=0.1.82"`）检查要求（`YOLO_AUTOINSTALL=False` 下不报错）。
-2. **双头离线验证与测试对照（`trainer.py:458-499`）**：
-   - **`val` split 强制双头分路（`:458-478`）**：因 `engine/model.py:1150-1171` `_reset_ckpt_args` 在加载 `best.pt` 时仅保留 `{"imgsz", "data", "task", "single_cls"}` 而丢弃 `nms`，必须显式分两路重跑：`best_model.val(..., split="val", nms=False, plots=True)`（`:458`）走 **`one2one` 端到端头**（与早停判据头及部署头一致），写入权威 **`val_metrics_e2e_head`** 并绑定顶层 `val_mAP50` / `val_mAP50_95`（`:558-559`）；`best_model.val(..., split="val", nms=None, plots=False)`（`:469`）走 **`one2many` + 外接 NMS**，写入对照 **`val_metrics_default_head`**（仅诊断用，不参与模型选择与部署）。
-   - **`test` split 双头对照（`:481-499`）**：若 `data.yaml` 含 `test` split，同样分别以 `nms=None`（`:482` → `test_metrics_default_head`）与 `nms=False`（`:491` → `test_metrics_e2e_head`）实跑两次作一致对照（重点排查若早停发生在第 491 轮前、`E2ELoss` 迁移未完成时两个头的差距）。
+2. **双头离线验证与测试对照（`trainer.py:473-516`）**：
+   - **`val` split 强制双头分路（`:458-478`）**：因 `engine/model.py:1150-1171` `_reset_ckpt_args` 在加载 `best.pt` 时仅保留 `{"imgsz", "data", "task", "single_cls"}` 而丢弃 `nms`，必须显式分两路重跑：`best_model.val(..., split="val", nms=False, plots=True)`（`:473`）走 **`one2one` 端到端头**（与早停判据头及部署头一致），写入权威 **`val_metrics_e2e_head`** 并绑定顶层 `val_mAP50` / `val_mAP50_95`（`:573-574`）；`best_model.val(..., split="val", nms=None, plots=False)`（`:484`）走 **`one2many` + 外接 NMS**，写入对照 **`val_metrics_default_head`**（仅诊断用，不参与模型选择与部署）。
+   - **`test` split 双头对照（`:481-499`）**：若 `data.yaml` 含 `test` split，同样分别以 `nms=None`（`:497` → `test_metrics_default_head`）与 `nms=False`（`:506` → `test_metrics_e2e_head`）实跑两次作一致对照（重点排查若早停发生在第 491 轮前、`E2ELoss` 迁移未完成时两个头的差距）。
 3. **产物体、静态 shape 门禁与 `metrics.json` 20 键契约**：
    - 同时保留原始 **`best.pt`** 与导出 **`best_e2e.onnx`**；
-   - `_verify_exported_onnx()`（`trainer.py:256-280` → `client.py:262-345`）用本地同类 `onnxruntime.InferenceSession(..., providers=["CPUExecutionProvider"])` 强制断言输入 `== [1, 3, 1280, 1280]`、输出 `== [1, 300, 6]`；
-   - 生成 **`metrics.json`**（顶层共 **20 个键**，`trainer.py:534-601`，详见下表）与 **`SHA256SUMS`**（`:609-618`，覆盖 `weights/best.pt`、`weights/best_e2e.onnx`、`weights/last.pt`、`results.csv`、`args.yaml`、`metrics.json`）。核心契约变更如下：
+   - `_verify_exported_onnx()`（`trainer.py:265-284` → `client.py:262-345`）用本地同类 `onnxruntime.InferenceSession(..., providers=["CPUExecutionProvider"])` 强制断言输入 `== [1, 3, 1280, 1280]`、输出 `== [1, 300, 6]`；
+   - 生成 **`metrics.json`**（顶层共 **20 个键**，`trainer.py:549-616`，详见下表）与 **`SHA256SUMS`**（`:624-632`，覆盖 `weights/best.pt`、`weights/best_e2e.onnx`、`weights/last.pt`、`results.csv`、`args.yaml`、`metrics.json`）。核心契约变更如下：
      - **彻底拆分验证指标（已移除旧键 `val_metrics`）**：拆分为 **`val_metrics_e2e_head`**（权威：早停判据头 == 部署头，`nms=False` / `one2one` 端到端）与 **`val_metrics_default_head`**（对照：`nms=None` / `one2many` + 外接 NMS，仅诊断用，不参与模型选择与部署）；顶层 **`val_mAP50`** / **`val_mAP50_95`** 明确绑定 **`val_metrics_e2e_head`**（`:558-559`）；
-     - **新增顶层 `head_contract` 块（`:543-555`）**：包含 7 个结构化键 + `note`（`"deploy_head": "one2one_end2e"`、`"deploy_nms": false`、`"early_stopping_head": "one2one_end2e"`、`"early_stopping_nms": false`、`"comparison_head": "one2many_external_nms"`、`"comparison_nms": null`、`"deploy_artifact": "weights/best_e2e.onnx"`），显式锁死早停判据头与部署产物头一致；
-     - **`train_config` 收敛至 25 键（`:565-590`，`task-133` 瘦身）**：`requested_batch`/`probed_batch`/`resolved_batch`/`fallback_batch` 4 键收敛为单一 **`batch`**（`trainer.py` AST 实核）——`epochs`, `patience`, `batch`, `imgsz`, `device`, `amp`, `optimizer`, `lr0`, `lrf`, `cos_lr`, `nms`, `flipud`, `fliplr`, `hsv_v`, `hsv_s`, `degrees`, `mosaic`, `mixup`, `copy_paste`, `close_mosaic`, `mosaic_polish_epochs`, `workers`, `exist_ok`, `seed`, `deterministic`，其中 **`"nms": false`** 显式标明早停判据头选择。
+     - **新增顶层 `head_contract` 块（`:558-570`）**：包含 7 个结构化键 + `note`（`"deploy_head": "one2one_end2e"`、`"deploy_nms": false`、`"early_stopping_head": "one2one_end2e"`、`"early_stopping_nms": false`、`"comparison_head": "one2many_external_nms"`、`"comparison_nms": null`、`"deploy_artifact": "weights/best_e2e.onnx"`），显式锁死早停判据头与部署产物头一致；
+     - **`train_config` 收敛至 25 键（`:580-606`，`task-133` 瘦身）**：`requested_batch`/`probed_batch`/`resolved_batch`/`fallback_batch` 4 键收敛为单一 **`batch`**（`trainer.py` AST 实核）——`epochs`, `patience`, `batch`, `imgsz`, `device`, `amp`, `optimizer`, `lr0`, `lrf`, `cos_lr`, `nms`, `flipud`, `fliplr`, `hsv_v`, `hsv_s`, `degrees`, `mosaic`, `mixup`, `copy_paste`, `close_mosaic`, `mosaic_polish_epochs`, `workers`, `exist_ok`, `seed`, `deterministic`，其中 **`"nms": false`** 显式标明早停判据头选择。
 
-| 序号 | `metrics.json` 顶层键（共 20 键） | 契约取值 / 绑定语义（`trainer.py:534-601`） |
+| 序号 | `metrics.json` 顶层键（共 20 键） | 契约取值 / 绑定语义（`trainer.py:549-616`） |
 |---:|---|---|
 | 1 | `generated_at` | UTC ISO-8601 生成时间戳 |
 | 2 | `model_version` | 模型版本号（默认 `"yolo26s-streetlight-v1.0"`） |
@@ -499,9 +499,9 @@ cd /root/autodl-tmp/tomori/repo
 ### 6.2 诚实状态声明（`F14` 边界）
 
 - **已证实与已落盘**：
-  1. 清洗、EDA 与训练脚本 `src/tomori/vision/dataset_prep.py`（**2,056 → 2,220** 行，`task-162`/`task-165` 追加 `_clean_samples`/`_out_names`/`--drop-occluded`）、`src/tomori/vision/eda.py`（**928** 行）、`src/tomori/vision/trainer.py`（**757 → 716（`task-133` 瘦身）→ 726（`task-167` `nc=3` 兼容）** 行：删 AutoBatch 探测链、`--model`/`--project` 改 `required=True`、`_DEFAULTS` `:42-56` 单一事实源、`_train_kwargs` `:318-351` 主训/精修共用、`validate_data_yaml` 改 `data.yaml.names` 权威源 + `RAW_CLASSES` 前缀子集 `:160-188`）已落地并经本地 `.venv` `ultralytics==8.4.216` 源码逐行核对（`config.py:19` 与 `trainer.py:70-116, :391, :347, :458, :469, :482, :491, :502, :534-601` 已同步锁定 `imgsz=1280`、`epochs=500`、`patience=20`、`batch=8`（固定整数 `>=1`）、`lrf=0.01`、`cos_lr=False`、`mosaic_polish_epochs=0`、`nms=False`、「早停判据头 == 部署头」`head_contract` 与 `metrics.json` 20 键 / `train_config` **25 键**契约）；
+  1. 清洗、EDA 与训练脚本 `src/tomori/vision/dataset_prep.py`（**2,056 → 2,220** 行，`task-162`/`task-165` 追加 `_clean_samples`/`_out_names`/`--drop-occluded`）、`src/tomori/vision/eda.py`（**928** 行）、`src/tomori/vision/trainer.py`（**757 → 716（`task-133` 瘦身）→ 726（`task-167` `nc=3` 兼容）→ 731（`task-173` `cos_lr` 去重修复）** 行：删 AutoBatch 探测链、`--model`/`--project` 改 `required=True`、`_DEFAULTS` `:42-56` 单一事实源、`_train_kwargs` `:327-360` 主训/精修共用、`validate_data_yaml` 改 `data.yaml.names` 权威源 + `RAW_CLASSES` 前缀子集 `:160-202`）已落地并经本地 `.venv` `ultralytics==8.4.216` 源码逐行核对（`config.py:19` 与 `trainer.py:70-124, :402, :356, :473, :484, :497, :506, :517, :549-616` 已同步锁定 `imgsz=1280`、`epochs=500`、`patience=20`、`batch=8`（固定整数 `>=1`）、`lrf=0.01`、`cos_lr=False`、`mosaic_polish_epochs=0`、`nms=False`、「早停判据头 == 部署头」`head_contract` 与 `metrics.json` 20 键 / `train_config` **25 键**契约）；
   2. 远端 `RTX 4080 SUPER`（`32,760 MiB` 总显存 / `32,230–32,231 MiB` 空闲、`CUDA 13.2`、`PyTorch 2.15.0+cu132`）、`/root/autodl-tmp/tomori/weights/yolo26s.pt`（`20,422,725 B`）、以及 **终版 8 源 `merged_v5`（`10,306` 图 / `25,855` EDA 框，`80/10/10` 组+单图按类分层装箱，图数偏差 `2.99pp`，13 项防泄漏校验全 `0`）与全量只读 EDA（含三口径 `1024 vs 1280` 对比）** 已实机执行核验落盘（`.team/notes/vision-dev/{merged-v5-class-stratified-report.md,dataset-eda-merged-v5.md}`、`.team/notes/vision-dev/logs/{merged_v5_prep_manifest.json,dataset_eda_merged_v5.json,merged_v5_class_distribution.json}`）；
-  3. **公开调研、同源域与长尾诚实边界**：① 遍查 8 大公开平台确认全网 `OCCLUDED` 除 `d1`（原始 `235` 框 / `merged_v5` 保留 `227` 框）外**无第二个公开源**，且 `merged_v5` 三集占比 `51.54/14.54/33.92`（偏差 `56.92pp`）为 `vid10` 组原子性 + `≥30` 地板约束的**结构性下限**（该类评估以 `val` 为准），后续仅靠合成遮挡与阶段二自采补足；② **`ext_pwd_s9` 与 `s6`/`s1`/`prj_n_8` 同属 NHAI 公路巡查系**（跨源去重已拦 `43` 张 SHA256 + `3` 张 pHash），虽将高清破损图增至 `207` 张（`+34.4%`），**仍非独立第三方来源**，不得据此夸大跨城市场景域泛化能力；③ 主动剔除 `d7` 乡村配电木杆与 `ext_civic_broken` 错标灭灯后 `streetlight_damaged` 净留 `1,423` 框，仍遵循 **`D-18`** 不承诺破损类检出率；
+  3. **公开调研、同源域与长尾诚实边界**：① 遍查 8 大公开平台确认全网 `OCCLUDED` 除 `d1`（源 `235` 框 / `merged_v5` 合并 `227` 框，`8` 去重损失）外**无第二个公开源**，且 `merged_v5` 三集占比 `51.54/14.54/33.92`（偏差 `56.92pp`）为 `vid10` 组原子性 + `≥30` 地板约束的**结构性下限**（该类评估以 `val` 为准），后续仅靠合成遮挡与阶段二自采补足；② **`ext_pwd_s9` 与 `s6`/`s1`/`prj_n_8` 同属 NHAI 公路巡查系**（跨源去重已拦 `43` 张 SHA256 + `3` 张 pHash），虽将高清破损图增至 `207` 张（`+34.4%`），**仍非独立第三方来源**，不得据此夸大跨城市场景域泛化能力；③ 主动剔除 `d7` 乡村配电木杆与 `ext_civic_broken` 错标灭灯后 `streetlight_damaged` 净留 `1,423` 框，仍遵循 **`D-18`** 不承诺破损类检出率；
   4. 本地 CPU `onnxruntime 1.32.0`（`yolo26s` E2E `nc=4` @ `1280` 默认线程 `median=383.40ms / max=464.97ms`，单线程最坏 `max=1,029.13ms`，距 `60s` 超时余量 `58.3×`）与远端 `RTX 4080 SUPER` 只读显存探针实测（`imgsz=1280`：`batch=8` 峰值 `12,028 MiB / 11.75 GiB`、`batch=16` `23,396 MiB / 22.85 GiB`——即 `_DEFAULTS["batch"]=8` 固定值的唯一实测依据；`AutoBatch` 探测链已随 `task-133` 全链删除，测后 `runs/` 为空、`nvidia-smi` `used=1 MiB`）已完成实测记录（`.team/notes/vision-dev/logs/bench-1280-vs-1024.log`）；
   5. **「早停判据头 == 部署头」源码链路与离线契约实证已落盘**（`.team/notes/vision-dev/logs/task86-head-plumbing-full.log`、`task86-probe-head-switch-proof.log`、`task86-metrics-schema-sim.log`）：在代码审查级链路核验基础上，离线随机权重 `Detect` 前向实证确认 `nms=None` → `Detect.end2end=False` 输出 `(1, 84, 33600)` vs `nms=False` → `Detect.end2end=True` 输出 `(1, 300, 6)`（与 `best_e2e.onnx` 部署张量完全一致），且本地模拟 `metrics.json` 20 键 / `train_config` 键集契约测试及 `client._load_metrics_metadata` / `_validate_metrics_names` 实跑全部通过（`SCHEMA OK`；`train_config` 键集已随 `task-133` 收敛为 **25 键**）。
 - **已实测回填（`task-74` 首次全周期正式训练，`2026-11-25`）**：
@@ -514,7 +514,7 @@ cd /root/autodl-tmp/tomori/repo
 
 ## 6.3 `streetlight_v1`/`merged_v5`（`nc=4`）首次全周期正式训练结果（`task-74` 实测回填，`2026-11-25`）
 
-> **`streetlight_v1` vs `streetlight_v3` 数据集对照**：`streetlight_v1`（输入 `merged_v5/data.yaml`/`nc=4`）含 `occluded` `227` 错标框（`AP50 val 0.125/test 0.0025`，`D-41` 弃用依据）；`streetlight_v3`（输入 `merged_v7/data.yaml`/`nc=3`）`occluded` 归零且 `on`/`off`/`damaged` 三类清标。`streetlight_v3` 完整实测见 **`§6.4`**。
+> **`streetlight_v1` vs `streetlight_v3` 数据集对照**：`streetlight_v1`（输入 `merged_v5/data.yaml`/`nc=4`）含 `occluded` `227` 错标框（`merged_v5` 合并口径；`d1` 源 `235` 框）（`AP50 val 0.125/test 0.0025`，`D-41` 弃用依据）；`streetlight_v3`（输入 `merged_v7/data.yaml`/`nc=3`）`occluded` 归零且 `on`/`off`/`damaged` 三类清标。`streetlight_v3` 完整实测见 **`§6.4`**。
 
 > **数据源（全部逐项核自本地落盘文件）**：`./vision/reports/streetlight_v1/metrics.json`（20 键）、`./vision/reports/streetlight_v1/results.csv`（43 行逐轮实测）、`./vision/reports/streetlight_v1/args.yaml`（`batch=24`/`epochs=500`/`patience=20`/`imgsz=1280`/`optimizer=auto`/`lr0=0.01`/`lrf=0.01`/`cos_lr=false`/`mosaic=0.8`/`mixup=0.05`/`copy_paste=0.15`/`close_mosaic=10`/`flipud=0.0`/`hsv_v=0.25`/`hsv_s=0.4`/`degrees=5.0`/`nms=False`/`seed=42`/`deterministic=true`）、`.team/notes/dev-ops/logs/task74-d30-inference.log`（`client.py` 真权重 `D-30` 验收输出）。
 
@@ -576,7 +576,7 @@ cd /root/autodl-tmp/tomori/repo
 
 ### 6.3.4 诚实边界（与既有文档一致的实测如实披露）
 
-1. **`streetlight_occluded` 长尾结构性局限**：`val` `AP50=0.1254`（`precision=0.0`/`recall=0.0`），`test` `AP50=0.0025`（`precision=1.0`/`recall=0.0`）——`occluded` 仅 `d1` 独源 `227` 框（`train 117/val 33/test 77`，`vid01`/`vid05` 组原子性致 `14.5%/33.9%` 偏态，§2.1 已声明结构性下限），`test` 77 框单点 AP 置信区间 `±18.9pp` 量级；**该短板属数据采集结构性问题，后续靠合成遮挡 + 阶段二自采补齐，按 `D-18` 不承诺检出率**；
+1. **`streetlight_occluded` 长尾结构性局限**：`val` `AP50=0.1254`（`precision=0.0`/`recall=0.0`），`test` `AP50=0.0025`（`precision=1.0`/`recall=0.0`）——`occluded` 仅 `d1` 独源（源 `235` 框 / `merged_v5` 合并 `227` 框，`8` 去重损失；`train 117/val 33/test 77`，`vid01`/`vid05` 组原子性致 `14.5%/33.9%` 偏态，§2.1 已声明结构性下限），`test` 77 框单点 AP 置信区间 `±18.9pp` 量级；**该短板属数据采集结构性问题，后续靠合成遮挡 + 阶段二自采补齐，按 `D-18` 不承诺检出率**；
 2. **`streetlight_damaged` 偏弱但在 `D-18` 范围**：`AP50 val 0.176 / test 0.218`，`recall val 0.148 / test 0.211`——`6` 源 `1,423` 框已实现 `0.08pp` 近精确切分但样本多样性仍有限（NHAI 系同域），按 `D-18` 不承诺破损检出率；
 3. **`streetlight_off` 的 `test` `AP50=0.462` 高于 `val` `0.218` 的 split 差异如实标注**：`test` 含 `vid05` 整组 `533` 个 `off` 框（`17.35%`），`val` 仅 `33` 框（`1.07%`），`off` 在 `test` 样本量 `16×` 于 `val` 所致的真实指标差——13 项泄漏断言全 `0`，非泄漏所致；
 4. **`one2one` 头欠训为已知残余风险**：`e2e_loss_o2o_weight` 仅迁移 `25.89%`、`close_mosaic` 未触发——按 §3.1 预案，`--mosaic-polish-epochs` 短微调精修可用于后续收敛 `one2one` 部署头（本轮未执行，属可选增量非缺陷）。
@@ -604,7 +604,7 @@ cd /root/autodl-tmp/tomori/repo
 
 - **执行事实**：`yolo train` `nc=3`（`names = [on, off, damaged]`，`data.yaml.names` 权威源——`D-43`）于 `merged_v7`（`6,983` 图 `5,570/846/567`）执行 `70` 轮后 `patience=20` 早停（`epoch 50` 峰值 `mAP50 0.6067`/`mAP50-95 0.27993`），总耗时 `7,217.1s`（`~2h`）；`batch=24`（GPU `100%`/`30,850 MiB`，`~1.9GB` 余量）、`imgsz=1280`、`optimizer="auto"`（`iterations>10000` 实际 `MuSGD`）、`amp=true`、`cos_lr=false`、`nms=False`（`train_config` 25 键全量写入 `metrics.json`）。
 - **`results.csv` 轨迹**：`ep1 0.343/0.105` → `ep10 0.380/0.138` → `ep20 0.532/0.242` → `ep30 0.578/0.241` → `ep40 0.596/0.250` → **`ep50` 峰值 `0.607/0.280`** → `ep55 0.598/0.268` → `ep60 0.572/0.249` → `ep70 0.570/0.264`——`epoch 50` 后平台回落，`patience=20` 正确锁 `best.pt` 于 `epoch 50`。
-- **`mosaic_polish` `cos_lr` bug 如实记录**：本批原随 `--mosaic-polish-epochs 20` 触发两阶段无 Mosaic 精修，`polish_model.train` 因 `_train_kwargs` 与显式 `cos_lr=True` 重复传参 `TypeError` 崩溃（`trainer.py:439` 修复点）；由 `vision-dev` `2ab866f`（`fix(vision): deduplicate cos_lr kwarg`，`polish_kwargs` dict `update` 去重覆盖）修复并推送；后续以 `--export-only` 完成 `val`/`test`/`export`/`SHA256SUMS` 链——**`mosaic_polish` 精修未实际执行**，属如实边界。
+- **`mosaic_polish` `cos_lr` bug 如实记录**：本批原随 `--mosaic-polish-epochs 20` 触发两阶段无 Mosaic 精修，`polish_model.train` 因 `_train_kwargs` 与显式 `cos_lr=True` 重复传参 `TypeError` 崩溃（`trainer.py:439-456` 修复点）；由 `vision-dev` `2ab866f`（`fix(vision): deduplicate cos_lr kwarg`，`polish_kwargs.update` 去重并把 `cos_lr` 改为 `False`——恒走 `cfg.cos_lr=False` 线性衰减）修复并推送；后续以 `--export-only` 完成 `val`/`test`/`export`/`SHA256SUMS` 链——**`mosaic_polish` 精修未实际执行**，属如实边界。
 - **`early_stopping_diagnostics` 为空 `{}` 如实记录**：`metrics.json` 由 `--export-only` 链重新生成，`train_config.mosaic_polish_epochs=0`（`--export-only` 默认）；`stopped_epoch=70`/`lr_remaining`/`e2e_loss` 权重未随导出链重写（`v1` 为训练链内写入）。
 
 ### 6.4.2 双头验证/测试指标（`metrics.json` 逐项，`e2e` 部署头为权威）
@@ -660,7 +660,7 @@ cd /root/autodl-tmp/tomori/repo
 | `test` `AP50` `damaged` | `0.21789` | `0.28221` | `+29.5%` |
 | `test` `AP50` `occluded` | `0.0025` | 弃用（`nc=3` 不产出） | — |
 
-- **`nc=3` 清洗收益实证**：剔除 `3,088` 帧白天亮招牌误标 + `occluded` `227` 框错标后，`off`/`damaged` `AP50` 大幅提升；`handback` 头条 `off +260%`/`damaged +73%`/`on +10%` 为 `v1` `val e2e` → `v3` `test default` 跨口径对比（如实标注，同口径 `e2e` `val`/`test` 见上表）。
+- **`nc=3` 清洗收益实证**：剔除 `3,088` 帧白天亮招牌误标 + `occluded` `227` 框错标（`merged_v5` 合并口径；`d1` 源 `235` 框）后，`off`/`damaged` `AP50` 大幅提升；`handback` 头条 `off +260%`/`damaged +73%`/`on +10%` 为 `v1` `val e2e` → `v3` `test default` 跨口径对比（如实标注，同口径 `e2e` `val`/`test` 见上表）。
 - **`off` `test>val` 差异延续**：`vid05` 整组 `533` 框 `off` 进 `test`（`17.35%`）vs `val` `33` 框（`1.07%`）的 split 差异与 `v1` 一致（`merged_v7` 同组装箱），如实非泄漏。
 
 ### 6.4.5 `D-30` + `damaged` 业务验收（`client.py` 真 `best_e2e.onnx`，`nc=3`）

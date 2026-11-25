@@ -248,7 +248,7 @@ plugins = ["pydantic.mypy"]
 >
 > **`[build-system]` 的 `uv_build` 版本区间**：`requires = ["uv_build>=0.8.14,<0.14"]` —— 下限对齐本机 `uv 0.8.14`（内置后端版本与 uv 同号），上限 `<0.14` 对齐远端 `uv 0.13.7`，保证两端均可解析；`[tool.uv.build-backend]` 显式写 `module-name = "tomori"` / `module-root = "src"` 而非依赖默认值，使 src layout 契约显式可审。
 
-> **`vision` extra 必须显式声明 `onnx>=1.16.0,<2.0.0` 与 `onnxslim>=0.1.82` 的理由**：生产/容器环境设 `YOLO_AUTOINSTALL=False`（禁止 `ultralytics` 运行期静默装包），而 Ultralytics 默认 `simplify=True` 导出 ONNX 时不仅依赖其 `[export-base]` extra 中的 `onnx` 与 `onnxslim`，更须对齐 `ultralytics==8.4.216` `exporter.py:1207/1217` 的 `check_requirements(("onnx>=1.16.0,<2.0.0", "onnxslim>=0.1.82"))` 硬要求；若不在此显式声明并收紧下限，`model.export(format="onnx", simplify=True)` 会在 `YOLO_AUTOINSTALL=False` 下直接报错，且可防止 `0.1.31..0.1.81` 在该限制下被拒导（见 `docs/RUNBOOK.md` §6 权重/导出门禁）。`ultralytics==8.4.216` 的 `==` 精确 pin 与 `docs/RUNBOOK.md` 锁定口径完全一致（`>=` 会解析到后续补丁版，与「锁定 `8.4.216`」意图不符）。
+> **`vision` extra 必须显式声明 `onnx>=1.16.0,<2.0.0` 与 `onnxslim>=0.1.82` 的理由**：生产/容器环境设 `YOLO_AUTOINSTALL=False`（禁止 `ultralytics` 运行期静默装包），而 Ultralytics 默认 `simplify=True` 导出 ONNX 时不仅依赖其 `[export-base]` extra 中的 `onnx` 与 `onnxslim`，更须对齐 `ultralytics==8.4.216` `exporter.py:1207`（`requirements = ["onnx>=1.16.1,<1.19.0" if rknn else "onnx>=1.12.0,<2.0.0"]`，`rknn` 特例 `>=1.16.1`）与 `:1217`（`onnxslim>=0.1.82`）的 `check_requirements` 硬要求；本项目声明 `onnx>=1.16.0,<2.0.0` 属**主动收紧**（比上游 `>=1.12.0` 更严），若不在此显式声明并收紧下限，`model.export(format="onnx", simplify=True)` 会在 `YOLO_AUTOINSTALL=False` 下直接报错，且可防止 `0.1.31..0.1.81` 在该限制下被拒导（见 `docs/RUNBOOK.md` §6 权重/导出门禁）。`ultralytics==8.4.216` 的 `==` 精确 pin 与 `docs/RUNBOOK.md` 锁定口径完全一致（`>=` 会解析到后续补丁版，与「锁定 `8.4.216`」意图不符）。
 
 #### SQLAlchemy 2.0 强制异步用法与常见陷阱
 
@@ -1159,7 +1159,7 @@ WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
 
 #### 检测标签 → 业务枚举映射与 `FaultCandidateResult`
 
-> **`nc=3`/`occluded` 弃用口径（`D-41`/`task-165`/`merged_v7`）**：`merged_v7` 起训练集为 `nc=3`（`names = [streetlight_on, streetlight_off, streetlight_damaged]`，`occluded` 由 `d1` 独源 `227` 框约 `95%` 错标 + 自证救回率 `~22%` 弃用——`D-41`）；下表 `streetlight_occluded` 行保留**仅为 `API` `fault_type=OCCLUDED` 手工报障兼容**（`merged_v7`/`streetlight_v3` 模型不产出该 `raw_class`，`mapping.py:164-167, 352-353` 分支与 `contract.py:20-23` 字面量仅契约兼容保留）。
+> **`nc=3`/`occluded` 弃用口径（`D-41`/`task-165`/`merged_v7`）**：`merged_v7` 起训练集为 `nc=3`（`names = [streetlight_on, streetlight_off, streetlight_damaged]`，`occluded` 由 `d1` 独源 `235` 框（`merged_v5` 合并 `227` 框，`8` 去重损失）约 `95%` 错标 + 自证救回率 `~22%` 弃用——`D-41`）；下表 `streetlight_occluded` 行保留**仅为 `API` `fault_type=OCCLUDED` 手工报障兼容**（`merged_v7`/`streetlight_v3` 模型不产出该 `raw_class`，`mapping.py:164-167, 352-353` 分支与 `contract.py:20-23` 字面量仅契约兼容保留）。
 
 | YOLO `raw_class` | 场景 | `candidate_fault_type` | `visual_signal_state` | `is_fault_candidate` |
 |---|---|---|---|---|
