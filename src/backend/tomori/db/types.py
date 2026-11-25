@@ -41,3 +41,21 @@ class TZDateTime(TypeDecorator[datetime]):
                 return value.replace(tzinfo=UTC)
             return value
         raise TypeError(f"Expected datetime from DB, got {type(value)!r}")
+
+
+def ensure_utc(dt: datetime | None = None) -> datetime:
+    """归一时区感知 UTC：传 `None` 返回当前 UTC，naive datetime 抛 `ValueError`。
+
+    由 `state_machine`/`sla`/`ticket_service`/`rework`/`dispatch`/`notifier`/`sla_scanner`
+    七处共用一份实现（`task-213` 收敛 `_ensure_utc` 私有拷贝）。
+    """
+    if dt is None:
+        return datetime.now(UTC)
+    if dt.tzinfo is None or dt.utcoffset() is None:
+        raise ValueError("timezone-aware datetime is required")
+    return dt.astimezone(UTC)
+
+
+def utc_now() -> datetime:
+    """当前 UTC 时间（`ensure_utc()` 语义别名）。"""
+    return datetime.now(UTC)

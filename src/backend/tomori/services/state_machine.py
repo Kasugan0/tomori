@@ -19,13 +19,14 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Final
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tomori.db.types import ensure_utc
 from tomori.models.account import Account
 from tomori.models.account_role import AccountRole
 from tomori.models.audit_log import AuditLog
@@ -42,22 +43,16 @@ from tomori.services.exceptions import (
 )
 
 __all__ = [
-    "DISPATCH_ACTIVE_STATES",
-    "DISPATCH_INITIAL_STATES",
     "DISPATCH_STATES",
     "DISPATCH_TERMINAL_STATES",
     "DISPATCH_TRANSITIONS",
     "NOTIFICATION_EVENT_TYPES",
-    "NOTIFICATION_INITIAL_STATES",
     "NOTIFICATION_STATES",
     "NOTIFICATION_TERMINAL_STATES",
     "NOTIFICATION_TRANSITIONS",
-    "REWORK_ACTIVE_STATES",
-    "REWORK_INITIAL_STATES",
     "REWORK_STATES",
     "REWORK_TERMINAL_STATES",
     "REWORK_TRANSITIONS",
-    "TICKET_ACTIVE_STATES",
     "TICKET_INITIAL_STATES",
     "TICKET_STATES",
     "TICKET_TERMINAL_STATES",
@@ -77,7 +72,6 @@ __all__ = [
     "transition_notification",
     "transition_rework",
     "transition_ticket",
-    "validate_transition",
 ]
 
 # ──────────────────────────────────────────────────────────────────────
@@ -102,7 +96,6 @@ TICKET_TRANSITIONS: Final[dict[str, frozenset[str]]] = {
     "CANCELLED": frozenset(),
 }
 TICKET_STATES: Final[frozenset[str]] = frozenset(TICKET_TRANSITIONS.keys())
-TICKET_ACTIVE_STATES: Final[frozenset[str]] = TICKET_STATES - TICKET_TERMINAL_STATES
 
 _DEFAULT_TICKET_ACTIONS: Final[dict[tuple[str, str], str]] = {
     ("AI_CANDIDATE_PENDING", "PENDING_DISPATCH"): "TICKET_CONFIRMED",
@@ -123,7 +116,6 @@ _DEFAULT_TICKET_ACTIONS: Final[dict[tuple[str, str], str]] = {
     ("MANUAL_REVIEW", "CANCELLED"): "MANUAL_REVIEW_RESOLVED",
 }
 
-DISPATCH_INITIAL_STATES: Final[frozenset[str]] = frozenset({"PENDING_ACCEPT"})
 DISPATCH_TERMINAL_STATES: Final[frozenset[str]] = frozenset(
     {"REJECTED", "COMPLETED", "TIMEOUT_REASSIGNED", "ESCALATED", "CANCELLED"}
 )
@@ -140,7 +132,6 @@ DISPATCH_TRANSITIONS: Final[dict[str, frozenset[str]]] = {
     "CANCELLED": frozenset(),
 }
 DISPATCH_STATES: Final[frozenset[str]] = frozenset(DISPATCH_TRANSITIONS.keys())
-DISPATCH_ACTIVE_STATES: Final[frozenset[str]] = DISPATCH_STATES - DISPATCH_TERMINAL_STATES
 
 _DEFAULT_DISPATCH_ACTIONS: Final[dict[tuple[str, str], str]] = {
     ("PENDING_ACCEPT", "ACCEPTED"): "DISPATCH_ACCEPTED",
@@ -153,7 +144,6 @@ _DEFAULT_DISPATCH_ACTIONS: Final[dict[tuple[str, str], str]] = {
     ("ACCEPTED", "CANCELLED"): "DISPATCH_CANCELLED",
 }
 
-REWORK_INITIAL_STATES: Final[frozenset[str]] = frozenset({"PENDING_DISPATCH", "IN_MANUAL_REVIEW"})
 REWORK_TERMINAL_STATES: Final[frozenset[str]] = frozenset(
     {"PASSED", "CLOSED_BY_REVIEW", "CANCELLED"}
 )
@@ -172,9 +162,7 @@ REWORK_TRANSITIONS: Final[dict[str, frozenset[str]]] = {
     "CANCELLED": frozenset(),
 }
 REWORK_STATES: Final[frozenset[str]] = frozenset(REWORK_TRANSITIONS.keys())
-REWORK_ACTIVE_STATES: Final[frozenset[str]] = REWORK_STATES - REWORK_TERMINAL_STATES
 
-NOTIFICATION_INITIAL_STATES: Final[frozenset[str]] = frozenset({"PENDING"})
 NOTIFICATION_TERMINAL_STATES: Final[frozenset[str]] = frozenset({"SENT"})
 NOTIFICATION_TRANSITIONS: Final[dict[str, frozenset[str]]] = {
     "PENDING": frozenset({"PROCESSING"}),  # D2
@@ -263,53 +251,6 @@ def ticket_deep_link(ticket_id: int) -> str:
     return f"/tickets/{ticket_id}"
 
 
-def validate_transition(entity: str, from_status: str, to_status: str) -> None:
-    """纯函数校验任意一套状态机单步转移，越界抛 `422 INVALID_STATE_TRANSITION`。"""
-    normalized = entity.lower()
-    if normalized in {"fault_ticket", "fault_tickets", "ticket"}:
-        _assert_transition(
-            entity="fault_tickets",
-            from_status=from_status,
-            to_status=to_status,
-            transitions=TICKET_TRANSITIONS,
-            allowed_from_map=_TICKET_ALLOWED_FROM,
-        )
-    elif normalized in {"dispatch_record", "dispatch_records", "dispatch"}:
-        _assert_transition(
-            entity="dispatch_records",
-            from_status=from_status,
-            to_status=to_status,
-            transitions=DISPATCH_TRANSITIONS,
-            allowed_from_map=_DISPATCH_ALLOWED_FROM,
-        )
-    elif normalized in {"rework_order", "rework_orders", "rework"}:
-        _assert_transition(
-            entity="rework_orders",
-            from_status=from_status,
-            to_status=to_status,
-            transitions=REWORK_TRANSITIONS,
-            allowed_from_map=_REWORK_ALLOWED_FROM,
-        )
-    elif normalized in {"notification_task", "notification_tasks", "notification"}:
-        _assert_transition(
-            entity="notification_tasks",
-            from_status=from_status,
-            to_status=to_status,
-            transitions=NOTIFICATION_TRANSITIONS,
-            allowed_from_map=_NOTIFICATION_ALLOWED_FROM,
-        )
-    else:
-        raise ValueError(f"Unknown state machine entity: {entity!r}")
-
-
-def _ensure_utc(dt: datetime | None = None) -> datetime:
-    if dt is None:
-        return datetime.now(UTC)
-    if dt.tzinfo is None or dt.utcoffset() is None:
-        raise ValueError("Timezone-aware datetime is required")
-    return dt.astimezone(UTC)
-
-
 def compute_notification_backoff(attempt_count: int) -> timedelta:
     """计算状态机 D 失败退避间隔（`DESIGN.md` §2.4：1m / 5m / 15m）。"""
     if attempt_count <= 1:
@@ -341,7 +282,7 @@ async def list_region_admin_ids(
     now: datetime | None = None,
 ) -> list[int]:
     """优先查询持有该区域有效 `MANAGE` 授权的活跃 `ADMIN`，若无则回退全部活跃 `ADMIN`。"""
-    ts = _ensure_utc(now)
+    ts = ensure_utc(now)
     stmt = (
         select(Account.id)
         .join(AccountRole, AccountRole.account_id == Account.id)
@@ -626,7 +567,7 @@ async def create_ticket_record(
             {"report_source": report_source, "fault_type": fault_type},
         )
 
-    ts = _ensure_utc(now)
+    ts = ensure_utc(now)
     effective_actor = actor_account_id if actor_account_id is not None else reporter_account_id
 
     if initial_status == "AI_CANDIDATE_PENDING":
@@ -638,7 +579,7 @@ async def create_ticket_record(
         resolved_confirmer_id = (
             confirmed_by_inspector_id if confirmed_by_inspector_id is not None else effective_actor
         )
-        resolved_confirmed_at = _ensure_utc(confirmed_at) if confirmed_at is not None else ts
+        resolved_confirmed_at = ensure_utc(confirmed_at) if confirmed_at is not None else ts
 
     _ = confirmed_by_inspector
     ticket = FaultTicket(
@@ -661,10 +602,10 @@ async def create_ticket_record(
         ai_suggestion_json=ai_suggestion_json,
         ai_max_confidence=ai_max_confidence,
         response_deadline_at=(
-            _ensure_utc(response_deadline_at) if response_deadline_at is not None else None
+            ensure_utc(response_deadline_at) if response_deadline_at is not None else None
         ),
         repair_deadline_at=(
-            _ensure_utc(repair_deadline_at) if repair_deadline_at is not None else None
+            ensure_utc(repair_deadline_at) if repair_deadline_at is not None else None
         ),
     )
     session.add(ticket)
@@ -803,7 +744,7 @@ async def transition_ticket(
                 {"field": "cancelled_by_account_id"},
             )
 
-    ts = _ensure_utc(now)
+    ts = ensure_utc(now)
 
     # 守住 ck_fault_tickets_inspector_confirmation_serialized：
     # 只要 status <> 'AI_CANDIDATE_PENDING'（含 A3 确认与 A4 撤销 / 系统 TTL 过期），
@@ -816,7 +757,7 @@ async def transition_ticket(
         )
         ticket.confirmed_by_inspector = True
         ticket.confirmed_by_inspector_id = fallback_confirmer
-        ticket.confirmed_at = _ensure_utc(confirmed_at) if confirmed_at is not None else ts
+        ticket.confirmed_at = ensure_utc(confirmed_at) if confirmed_at is not None else ts
 
     if to_status == "CLOSED":
         ticket.closed_at = ts
@@ -903,7 +844,7 @@ async def create_dispatch_record(
             {"field": "dispatch_mode", "dispatch_mode": dispatch_mode},
         )
 
-    ts = _ensure_utc(dispatched_at)
+    ts = ensure_utc(dispatched_at)
     record = DispatchRecord(
         ticket_id=resolved_ticket_id,
         rework_order_id=rework_order_id,
@@ -918,7 +859,7 @@ async def create_dispatch_record(
             _json_safe(candidate_snapshot_json) if candidate_snapshot_json is not None else None
         ),
         dispatched_at=ts,
-        accept_deadline_at=_ensure_utc(accept_deadline_at),
+        accept_deadline_at=ensure_utc(accept_deadline_at),
     )
     session.add(record)
     await session.flush()
@@ -967,7 +908,7 @@ async def transition_dispatch(
             {"field": "escalate_reason"},
         )
 
-    ts = _ensure_utc(now)
+    ts = ensure_utc(now)
     previous_accepted_at = dispatch.accepted_at
 
     # 守住 ck_dispatch_records_accepted_at_required:
@@ -1125,7 +1066,7 @@ async def transition_rework(
                 {"field": "actor_account_id"},
             )
 
-    ts = _ensure_utc(now)
+    ts = ensure_utc(now)
     if to_status in {"IN_MANUAL_REVIEW", "CLOSED_BY_REVIEW"}:
         rework.requires_manual_review = True
     if to_status in REWORK_TERMINAL_STATES:
@@ -1198,7 +1139,7 @@ async def transition_notification(
             )
         task.attempt_count = attempt_count
 
-    ts = _ensure_utc(now)
+    ts = ensure_utc(now)
     if from_status == "DEAD_LETTER" and to_status == "PENDING":  # D7 retry
         task.attempt_count = 0
         task.last_error = None
@@ -1214,14 +1155,14 @@ async def transition_notification(
         if last_error is not None:
             task.last_error = last_error[:512]
         task.next_retry_at = (
-            _ensure_utc(next_retry_at)
+            ensure_utc(next_retry_at)
             if (next_retry_at is not None and task.attempt_count < task.max_attempts)
             else (None if task.attempt_count >= task.max_attempts else ts)
         )
     elif from_status == "FAILED" and to_status == "PENDING":  # D5 退避到期准备重投
         task.sent_at = None
         if next_retry_at is not None and task.attempt_count < task.max_attempts:
-            task.next_retry_at = _ensure_utc(next_retry_at)
+            task.next_retry_at = ensure_utc(next_retry_at)
         else:
             task.next_retry_at = None
     elif to_status == "SENT":  # D3
@@ -1233,7 +1174,7 @@ async def transition_notification(
         task.last_error = resolved_err[:512]
         if task.attempt_count < task.max_attempts:
             task.next_retry_at = (
-                _ensure_utc(next_retry_at)
+                ensure_utc(next_retry_at)
                 if next_retry_at is not None
                 else (ts + compute_notification_backoff(max(task.attempt_count, 1)))
             )

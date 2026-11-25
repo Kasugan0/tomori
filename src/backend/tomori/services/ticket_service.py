@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -28,6 +28,7 @@ from sqlalchemy import null, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tomori.db.types import ensure_utc
 from tomori.models.acceptance_record import AcceptanceRecord
 from tomori.models.account import Account
 from tomori.models.audit_log import AuditLog
@@ -119,14 +120,6 @@ _EVIDENCE_TYPES: frozenset[str] = frozenset(
 )
 
 
-def _ensure_utc(dt: datetime | None = None) -> datetime:
-    if dt is None:
-        return datetime.now(UTC)
-    if dt.tzinfo is None or dt.utcoffset() is None:
-        raise ValueError("Timezone-aware datetime required")
-    return dt.astimezone(UTC)
-
-
 # ──────────────────────────────────────────────────────────────────────
 # 单号与序列化
 # ──────────────────────────────────────────────────────────────────────
@@ -138,7 +131,7 @@ async def next_ticket_no(session: AsyncSession, *, now: datetime | None = None) 
     以「当日最大序号」而非 `count()` 递推：撤销或删除过的单号不会被重复占用。
     并发撞号最终由 `uq_fault_tickets_ticket_no` 兜底暴露，而非静默复用。
     """
-    day_str = _ensure_utc(now).astimezone(_SHANGHAI_TZ).strftime("%Y%m%d")
+    day_str = ensure_utc(now).astimezone(_SHANGHAI_TZ).strftime("%Y%m%d")
     prefix = f"FT-{day_str}-"
     used: set[int] = set()
     rows = await session.scalars(
@@ -568,7 +561,7 @@ async def analyze_ai_candidates_flow(
     max_upload_bytes: int,
 ) -> tuple[FaultTicket | None, list[FaultEvidence], list[AuditLog]]:
     """执行 12 步静态巡查识别：零候选留证不建票，否则建 `AI_CANDIDATE_PENDING` 草稿单。"""
-    now = _ensure_utc()
+    now = ensure_utc()
 
     # 1. 区域/点位解析 + INSPECT 授权
     target_region_id, point = await _resolve_target_region(
@@ -745,7 +738,7 @@ async def create_manual_ticket_flow(
 
     本函数绝不导入 `tomori.vision`（D1），视觉不可用时仍返回 `201`。
     """
-    ts = _ensure_utc(now)
+    ts = ensure_utc(now)
     point = await session.scalar(select(LightingPoint).where(LightingPoint.id == lighting_point_id))
     if point is None:
         raise AppError(
@@ -953,7 +946,7 @@ async def confirm_ticket_flow(
     now: datetime | None = None,
 ) -> tuple[FaultTicket, list[AuditLog]]:
     """巡查员确认 AI 候选：分级 + 48h 基准 deadline + 转 `PENDING_DISPATCH`（A3）。"""
-    ts = _ensure_utc(now)
+    ts = ensure_utc(now)
     if ticket.status != "AI_CANDIDATE_PENDING":
         raise AppError(
             INVALID_STATE_TRANSITION,
@@ -1057,7 +1050,7 @@ async def cancel_ticket_flow(
     now: datetime | None = None,
 ) -> tuple[FaultTicket, list[AuditLog]]:
     """撤销工单（A4 / A5）：仅 `AI_CANDIDATE_PENDING` 与 `PENDING_DISPATCH` 可撤。"""
-    ts = _ensure_utc(now)
+    ts = ensure_utc(now)
     if ticket.status not in {"AI_CANDIDATE_PENDING", "PENDING_DISPATCH"}:
         raise AppError(
             INVALID_STATE_TRANSITION,
@@ -1194,7 +1187,7 @@ async def upload_ticket_evidences_flow(
                 "evidence_type": evidence_type,
             },
         )
-    ts = _ensure_utc(now)
+    ts = ensure_utc(now)
     validated = _validate_media_batch(raw_files, min_count=1, max_upload_bytes=max_upload_bytes)
 
     existing_hashes = set(

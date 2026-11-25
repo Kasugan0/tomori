@@ -23,6 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tomori.db.session import get_async_sessionmaker
+from tomori.db.types import ensure_utc
 from tomori.models.business_rule import BusinessRule
 from tomori.models.fault_evidence import FaultEvidence
 from tomori.models.fault_ticket import FaultTicket
@@ -45,14 +46,6 @@ __all__ = [
     "run_sla_scan_once",
     "sla_scanner_loop",
 ]
-
-
-def _ensure_utc(dt: datetime | None) -> datetime:
-    if dt is None:
-        return datetime.now(UTC)
-    if dt.tzinfo is None or dt.utcoffset() is None:
-        raise ValueError("Expected timezone-aware datetime")
-    return dt.astimezone(UTC)
 
 
 async def _get_ai_candidate_ttl_hours(session: AsyncSession) -> int:
@@ -86,7 +79,7 @@ async def expire_stale_ai_candidates_once(
     """清理超期未确认的 `AI_CANDIDATE_PENDING` 工单并发送 `AI_CANDIDATE_EXPIRED` 通知。"""
 
     async def _run() -> int:
-        current_time = _ensure_utc(now)
+        current_time = ensure_utc(now)
         ttl_hours = await _get_ai_candidate_ttl_hours(session)
         cutoff = current_time - timedelta(hours=ttl_hours)
 
@@ -146,7 +139,7 @@ async def cleanup_orphan_uploads_once(
     if not root.is_dir():
         return 0
 
-    current_time = _ensure_utc(now)
+    current_time = ensure_utc(now)
     cutoff = current_time - timedelta(hours=min_age_hours)
 
     rows = (

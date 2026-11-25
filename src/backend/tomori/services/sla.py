@@ -19,12 +19,13 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Mapping
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any, Final
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tomori.db.types import ensure_utc
 from tomori.models.dispatch_record import DispatchRecord
 from tomori.models.fault_ticket import FaultTicket
 from tomori.models.rework_order import ReworkOrder
@@ -69,20 +70,12 @@ _REPAIR_OVERDUE_STATUSES: Final[tuple[str, ...]] = (
 )
 
 
-def _ensure_utc(dt: datetime | None = None) -> datetime:
-    if dt is None:
-        return datetime.now(UTC)
-    if dt.tzinfo is None or dt.utcoffset() is None:
-        raise ValueError("Timezone-aware datetime required")
-    return dt.astimezone(UTC)
-
-
 def compute_deadlines(
     confirmed_at: datetime,
     sla_policy: Mapping[str, Any] | None = None,
 ) -> tuple[datetime | None, datetime]:
     """根据 `sla_policy` 计算 `(response_deadline_at, repair_deadline_at)`（全等级统一适用）。"""
-    base_time = _ensure_utc(confirmed_at)
+    base_time = ensure_utc(confirmed_at)
     policy = sla_policy if sla_policy is not None else DEFAULT_SLA_POLICY
 
     raw_hours = policy.get("statutory_deadline_hours", 48)
@@ -118,8 +111,8 @@ def compute_accept_deadline(
     sla_policy: Mapping[str, Any] | None = None,
 ) -> datetime:
     """计算派工接单防死锁时限（`response_minutes=null` 时取所属票 `repair_deadline_at`）。"""
-    disp_utc = _ensure_utc(dispatched_at)
-    repair_utc = _ensure_utc(repair_deadline_at)
+    disp_utc = ensure_utc(dispatched_at)
+    repair_utc = ensure_utc(repair_deadline_at)
     policy = sla_policy if sla_policy is not None else DEFAULT_SLA_POLICY
     response_minutes = policy.get("response_minutes")
     if (
@@ -149,7 +142,7 @@ async def run_sla_scan(
     now: datetime | None = None,
 ) -> dict[str, int]:
     """执行三段幂等 SLA 扫描，返回三项统计计数。"""
-    current_time = _ensure_utc(now)
+    current_time = ensure_utc(now)
     scan_request_id = request_id or uuid.uuid4()
     marked_overdue = 0
     timeout_reassigned = 0

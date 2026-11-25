@@ -22,25 +22,24 @@ import asyncio
 import inspect
 import logging
 from collections.abc import Awaitable, Callable, Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Final
 
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tomori.db.session import get_async_sessionmaker
-from tomori.models.account import Account
-from tomori.models.account_role import AccountRole
+from tomori.db.types import ensure_utc
 from tomori.models.notification_task import NotificationTask
-from tomori.models.role import Role
 from tomori.services.state_machine import (
+    compute_notification_backoff,
     create_notification_task,
+    list_all_admin_ids,
     transition_notification,
 )
 
 logger = logging.getLogger(__name__)
 
-RETRY_BACKOFF_SECONDS: Final[tuple[int, ...]] = (60, 300, 900)
 PROCESSING_TIMEOUT_MINUTES: Final[int] = 10
 WORKER_PROCESSING_TIMEOUT_ERROR: Final[str] = "worker_processing_timeout_10m"
 DEFAULT_NOTIFIER_INTERVAL_SECONDS: Final[float] = 5.0
@@ -55,7 +54,6 @@ __all__ = [
     "DEFAULT_NOTIFIER_BATCH_SIZE",
     "DEFAULT_NOTIFIER_INTERVAL_SECONDS",
     "PROCESSING_TIMEOUT_MINUTES",
-    "RETRY_BACKOFF_SECONDS",
     "WORKER_PROCESSING_TIMEOUT_ERROR",
     "ChannelDispatcher",
     "DeliveryResult",
@@ -67,25 +65,14 @@ __all__ = [
 ]
 
 
-def _ensure_utc(dt: datetime | None) -> datetime:
-    if dt is None:
-        return datetime.now(UTC)
-    if dt.tzinfo is None or dt.utcoffset() is None:
-        raise ValueError("Expected timezone-aware datetime")
-    return dt.astimezone(UTC)
-
-
 def _truncate_error(raw: str) -> str:
     cleaned = raw.strip() or "delivery_failed"
     return cleaned[:MAX_LAST_ERROR_LENGTH]
 
 
 def compute_backoff_seconds(attempt_count: int) -> int:
-    """计算 D4 失败退避秒数：第 1/2/3+ 次失败分别为 60 / 300 / 900 秒。"""
-    if attempt_count <= 1:
-        return RETRY_BACKOFF_SECONDS[0]
-    index = min(attempt_count - 1, len(RETRY_BACKOFF_SECONDS) - 1)
-    return RETRY_BACKOFF_SECONDS[index]
+    """D4 失败退避秒数（薄壳委托 `state_machine.compute_notification_backoff`，表只留一份）。"""
+    return int(compute_notification_backoff(attempt_count).total_seconds())
 
 
 def default_channel_dispatcher(task: NotificationTask) -> None:
@@ -93,20 +80,6 @@ def default_channel_dispatcher(task: NotificationTask) -> None:
     if task.channel == "IN_APP":
         return
     raise RuntimeError(f"channel_{task.channel.lower()}_not_configured_in_v1")
-
-
-async def _get_active_admin_ids(session: AsyncSession) -> list[int]:
-    stmt = (
-        select(Account.id)
-        .join(AccountRole, AccountRole.account_id == Account.id)
-        .join(Role, Role.id == AccountRole.role_id)
-        .where(
-            Account.status == "ACTIVE",
-            Role.code == "ADMIN",
-        )
-        .order_by(Account.id.asc())
-    )
-    return list((await session.scalars(stmt)).all())
 
 
 async def _fan_out_dead_letter_alerts(
@@ -117,7 +90,7 @@ async def _fan_out_dead_letter_alerts(
     if not eligible:
         return 0
 
-    admin_ids = await _get_active_admin_ids(session)
+    admin_ids = await list_all_admin_ids(session)
     if not admin_ids:
         logger.warning(
             "Dead-lettered %d notification task(s), but no active ADMIN account exists",
@@ -176,7 +149,7 @@ async def recover_stuck_processing_tasks(
         raise ValueError("timeout_minutes must be >= 1")
 
     async def _run() -> int:
-        current_time = _ensure_utc(now)
+        current_time = ensure_utc(now)
         cutoff = current_time - timedelta(minutes=timeout_minutes)
 
         stmt = (
@@ -245,7 +218,7 @@ async def process_due_notifications_once(
         raise ValueError("batch_size must be >= 1")
 
     async def _run() -> dict[str, int]:
-        current_time = _ensure_utc(now)
+        current_time = ensure_utc(now)
         effective_dispatcher = dispatcher if dispatcher is not None else default_channel_dispatcher
 
         claim_stmt = (

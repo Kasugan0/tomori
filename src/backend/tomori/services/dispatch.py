@@ -21,6 +21,7 @@ from sqlalchemy import and_, case, delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tomori.db.types import ensure_utc
 from tomori.models.account import Account
 from tomori.models.account_role import AccountRole
 from tomori.models.audit_log import AuditLog
@@ -103,14 +104,6 @@ _SAFETY_CHECKLIST_FIELDS: Final[tuple[str, ...]] = (
 )
 
 
-def _ensure_utc(dt: datetime | None = None) -> datetime:
-    if dt is None:
-        return datetime.now(UTC)
-    if dt.tzinfo is None or dt.utcoffset() is None:
-        raise ValueError("Timezone-aware datetime is required")
-    return dt.astimezone(UTC)
-
-
 def _normalize_optional_utc(dt: datetime | None) -> datetime | None:
     if dt is None:
         return None
@@ -126,11 +119,11 @@ def _normalize_optional_utc(dt: datetime | None) -> datetime | None:
 def _is_scope_valid_at(scope: ScopeAuthorization, at: datetime) -> bool:
     if not scope.is_active:
         return False
-    valid_from = _ensure_utc(scope.valid_from)
+    valid_from = ensure_utc(scope.valid_from)
     if valid_from > at:
         return False
     if scope.valid_to is not None:
-        valid_to = _ensure_utc(scope.valid_to)
+        valid_to = ensure_utc(scope.valid_to)
         if valid_to <= at:
             return False
     return True
@@ -392,7 +385,7 @@ async def compute_dispatch_candidates(
     now: datetime | None = None,
 ) -> DispatchCandidatesResponseOut:
     """计算工单推荐维修员列表与不合格排除清单（5 值原因 + 确定性三级并列裁决）。"""
-    ts = _ensure_utc(now)
+    ts = ensure_utc(now)
     _, w_workload, w_skill, w_on_time, max_recommendations = await _load_scoring_config(session)
 
     tech_stmt = (
@@ -448,7 +441,7 @@ async def compute_dispatch_candidates(
         )
     ).all()
     last_dispatched_map: dict[int, datetime] = {
-        int(aid): _ensure_utc(last_dt) for aid, last_dt in last_dispatch_rows if last_dt is not None
+        int(aid): ensure_utc(last_dt) for aid, last_dt in last_dispatch_rows if last_dt is not None
     }
 
     late_case = case(
@@ -597,7 +590,7 @@ async def verify_technician_eligible(
 
     返回 `(Account, ScopeAuthorization, active_dispatch_count, max_active_dispatch)`。
     """
-    ts = _ensure_utc(now)
+    ts = ensure_utc(now)
 
     account = await session.scalar(select(Account).where(Account.id == technician_account_id))
     if account is None:
@@ -717,7 +710,7 @@ async def dispatch_ticket(
     now: datetime | None = None,
 ) -> tuple[DispatchRecord, FaultTicket, list[AuditLog]]:
     """执行工单派工（A6 / A14 + B1 + C3）。"""
-    ts = _ensure_utc(now)
+    ts = ensure_utc(now)
     target_ticket = await _resolve_locked_ticket(session, ticket_id=ticket_id, ticket=ticket)
 
     if not target_ticket.confirmed_by_inspector:
@@ -862,7 +855,7 @@ async def reassign_ticket(
     now: datetime | None = None,
 ) -> tuple[DispatchRecord, FaultTicket, list[AuditLog]]:
     """管理员改派 / 升级改派（B6 / B7 + B1；保持工单处于 DISPATCHED 且不顺延法定 48h 时限）。"""
-    ts = _ensure_utc(now)
+    ts = ensure_utc(now)
     target_ticket = await _resolve_locked_ticket(session, ticket_id=ticket_id, ticket=ticket)
 
     if target_ticket.status != "DISPATCHED":
@@ -998,7 +991,7 @@ async def accept_dispatch(
     now: datetime | None = None,
 ) -> tuple[DispatchRecord, FaultTicket, list[AuditLog]]:
     """维修员接单（A7 + B2 + C4，接单时再次强校验区域 REPAIR 授权与接单时限）。"""
-    ts = _ensure_utc(now)
+    ts = ensure_utc(now)
     target_dispatch, target_ticket = await _resolve_locked_dispatch_and_ticket(
         session,
         dispatch_id=dispatch_id,
@@ -1047,7 +1040,7 @@ async def accept_dispatch(
             },
         )
 
-    accept_deadline = _ensure_utc(target_dispatch.accept_deadline_at)
+    accept_deadline = ensure_utc(target_dispatch.accept_deadline_at)
     if ts > accept_deadline:
         raise AppError(
             INVALID_STATE_TRANSITION,
@@ -1121,7 +1114,7 @@ async def reject_dispatch(
     now: datetime | None = None,
 ) -> tuple[DispatchRecord, FaultTicket, list[AuditLog]]:
     """维修员拒单（A8 + B3；累计拒单 >= 3 次强制流转 MANUAL_REVIEW）。"""
-    ts = _ensure_utc(now)
+    ts = ensure_utc(now)
     target_dispatch, target_ticket = await _resolve_locked_dispatch_and_ticket(
         session,
         dispatch_id=dispatch_id,
@@ -1215,7 +1208,7 @@ async def escalate_dispatch(
     now: datetime | None = None,
 ) -> tuple[DispatchRecord, FaultTicket]:
     """维修员异常升级（A10 + B6；直接持久化审计与通知）。"""
-    ts = _ensure_utc(now)
+    ts = ensure_utc(now)
     target_dispatch, target_ticket = await _resolve_locked_dispatch_and_ticket(
         session,
         dispatch_id=dispatch_id,
@@ -1307,7 +1300,7 @@ async def complete_dispatch(
     now: datetime | None = None,
 ) -> tuple[DispatchRecord, FaultTicket, RepairProcess, list[MaterialUsage], list[AuditLog]]:
     """维修完工提交（A9 + B5 + C5 + 电气安全 6 件套强制收集全部缺失项）。"""
-    ts = _ensure_utc(now)
+    ts = ensure_utc(now)
     target_dispatch, target_ticket = await _resolve_locked_dispatch_and_ticket(
         session,
         dispatch_id=dispatch_id,

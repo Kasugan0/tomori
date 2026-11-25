@@ -13,13 +13,14 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, Final
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tomori.db.types import ensure_utc
 from tomori.models.acceptance_record import AcceptanceRecord
 from tomori.models.account import Account
 from tomori.models.audit_log import AuditLog
@@ -52,14 +53,6 @@ __all__ = [
 
 _SHANGHAI_TZ: Final[ZoneInfo] = ZoneInfo("Asia/Shanghai")
 _DEFAULT_MAX_REWORK_ROUNDS: Final[int] = 2
-
-
-def _ensure_utc(dt: datetime | None = None) -> datetime:
-    if dt is None:
-        return datetime.now(UTC)
-    if dt.tzinfo is None or dt.utcoffset() is None:
-        raise ValueError("Timezone-aware datetime is required")
-    return dt.astimezone(UTC)
 
 
 async def _get_max_rework_rounds(session: AsyncSession) -> int:
@@ -138,7 +131,7 @@ async def submit_acceptance(
     now: datetime | None = None,
 ) -> tuple[AcceptanceRecord, FaultTicket, ReworkOrder | None, list[AuditLog]]:
     """巡查员现场验收（A11 通过 / A12 正常返修 / A13 超阈值强进人工复核）。"""
-    ts = _ensure_utc(now)
+    ts = ensure_utc(now)
     target_ticket = await _resolve_locked_ticket(session, ticket_id=ticket_id, ticket=ticket)
 
     if target_ticket.status != "PENDING_ACCEPTANCE":
@@ -403,7 +396,7 @@ async def review_resolve_ticket(
     now: datetime | None = None,
 ) -> tuple[FaultTicket, list[AuditLog]]:
     """管理员人工复核裁决三出口（A15 APPROVE_REASSIGN / A16 SPECIAL_CLOSE / A17）。"""
-    ts = _ensure_utc(now)
+    ts = ensure_utc(now)
     target_ticket = await _resolve_locked_ticket(session, ticket_id=ticket_id, ticket=ticket)
 
     if target_ticket.status != "MANUAL_REVIEW":

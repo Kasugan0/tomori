@@ -12,10 +12,12 @@ from typing import cast
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.exc import SQLAlchemyError
 
 from tomori.api.errors import register_exception_handlers
 from tomori.api.v1 import api_router
 from tomori.services.auth import seed_demo_data
+from tomori.services.exceptions import AppError
 from tomori.settings import get_settings
 from tomori.workers.notifier import notifier_loop
 from tomori.workers.sla_scanner import sla_scanner_loop
@@ -80,7 +82,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         async with session_factory() as session:
             await seed_demo_data(session)
             await session.commit()
-    except Exception:
+    except (SQLAlchemyError, AppError):
         logger.exception("Demo data seeding skipped (database unavailable or already seeded)")
 
     if settings.app_env != "test":
