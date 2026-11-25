@@ -653,6 +653,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         dest="clean_drop_occluded",
         help="`task-165`：`occluded` 弃用——删 `cid==3` + `nc`/`names`/`target_names` 改 `3` 类",
     )
+    parser.add_argument(
+        "--clean-damaged-lamp-model",
+        type=Path,
+        default=None,
+        help="`best.pt`：`d3` `damaged` 灯头区过滤（`conf>=0.25` 检出灯具框，"
+        "`damaged` GT 须 `IoU>=0.1` 或中心点落灯具框内才保留）",
+    )
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     specs = tuple(_parse_source_arg(item) for item in args.source)
@@ -672,6 +679,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         clean_day_mean_v_max=args.clean_day_mean_v_max,
         clean_occluded_model=args.clean_occluded_model,
         clean_drop_occluded=args.clean_drop_occluded,
+        clean_damaged_lamp_model=args.clean_damaged_lamp_model,
     )
     res = prepare_dataset(cfg)
     print(

@@ -180,6 +180,9 @@ class DatasetPrepConfig:
     # `task-165`：`occluded` 类明确弃用（`nc=3`）——`_clean_samples` 兜底删 `cid==3`，
     # 输出层 `data.yaml` `nc`/`names`/`target_names`/`split_class_*` 均为 `3` 类
     clean_drop_occluded: bool = False
+    # `task-204`：`d3` `damaged` 灯头区过滤——`damaged`（`cid==2`）GT 框须与任一灯具
+    # 检测框 `IoU>=0.1` 或中心点落灯具框内才保留（`best.pt`，`conf>=0.25` 检出）
+    clean_damaged_lamp_model: Path | None = None
 
     def __post_init__(self) -> None:
         if not self.sources:
@@ -1150,16 +1153,24 @@ def _clean_samples(
         "day_dropped_boxes_by_cls": Counter(),
         "occluded_relabeled_on": 0,
         "occluded_deleted": 0,
+        "damaged_dropped_nonlamp_images": 0,
+        "damaged_dropped_nonlamp_boxes": 0,
+        "damaged_kept_lamp_overlap": 0,
         "empty_frames_dropped": 0,
     }
     cv2: Any = __import__("cv2")
 
-    # `occluded` 自证重标模型（`best.pt`，`conf>=0.65` 判 `on` 则 `3`→`0`）
+    # `occluded` 自证重标模型（`best.pt`，`conf>=0.65` 判 `on` 则 `3`→`0`）与
+    # `damaged` 灯头区过滤模型（`best.pt`，`conf>=0.25` 检出灯具框）共用懒加载
     occl_model = None
-    if cfg.clean_occluded_model is not None:
+    lamp_model = None
+    if cfg.clean_occluded_model is not None or cfg.clean_damaged_lamp_model is not None:
         os.environ["YOLO_AUTOINSTALL"] = "False"
         ultralytics_mod: Any = __import__("ultralytics")
-        occl_model = ultralytics_mod.YOLO(str(cfg.clean_occluded_model))
+        if cfg.clean_occluded_model is not None:
+            occl_model = ultralytics_mod.YOLO(str(cfg.clean_occluded_model))
+        if cfg.clean_damaged_lamp_model is not None:
+            lamp_model = ultralytics_mod.YOLO(str(cfg.clean_damaged_lamp_model))
 
     def _n2x(c: Sequence[float]) -> tuple[float, float, float, float]:
         xc, yc, w, h = c
@@ -1192,6 +1203,8 @@ def _clean_samples(
                 continue
 
         occl_results = None
+        lamp_results = None
+        dropped_lamp_boxes = 0
         new_boxes: list[tuple[int, float, float, float, float]] = []
         for cid, xc, yc, bw, bh in s.boxes:
             if cid == 3 and occl_model is not None:
@@ -1225,9 +1238,39 @@ def _clean_samples(
                 # `task-165`：`occluded` 弃用——无自证模型时兜底删 `cid==3`（`nc=3` 输出）
                 stats["occluded_deleted"] += 1
                 continue
+            if cid == 2 and lamp_model is not None:
+                # `task-204`：`d3` `damaged` 灯头区过滤——`damaged` GT 框须与任一灯具
+                # 检测框 `IoU>=0.1` 或 `GT` 中心点落在灯具框内，否则剔除（`d3` 杆体/
+                # 基座/地坪误标 `damaged` `~82%` 实测，`task-199` 抽检依据）
+                if lamp_results is None:
+                    lamp_results = lamp_model.predict(
+                        str(s.image_path),
+                        imgsz=1280,
+                        conf=0.25,
+                        iou=0.7,
+                        verbose=False,
+                    )[0]
+                gb = _n2x((xc, yc, bw, bh))
+                lamp_ok = False
+                if lamp_results.boxes is not None:
+                    for b in lamp_results.boxes:
+                        lb = _n2x(tuple(map(float, b.xywhn[0].tolist())))
+                        if _iou(gb, lb) >= 0.1 or (lb[0] <= xc <= lb[2] and lb[1] <= yc <= lb[3]):
+                            lamp_ok = True
+                            break
+                if lamp_ok:
+                    stats["damaged_kept_lamp_overlap"] += 1
+                    new_boxes.append((cid, xc, yc, bw, bh))
+                else:
+                    stats["damaged_dropped_nonlamp_boxes"] += 1
+                    dropped_lamp_boxes += 1
+                continue
             # `damaged` 全保留（`task-161` 已证「杆体 vs 灯头」语义混杂但不删，
-            # 由 `D-30` 映射层按「设施损坏」语义处理）
+            # 由 `D-30` 映射层按「设施损坏」语义处理；`lamp_model` 缺省时不过滤）
             new_boxes.append((cid, xc, yc, bw, bh))
+
+        if dropped_lamp_boxes > 0:
+            stats["damaged_dropped_nonlamp_images"] += 1
 
         if new_boxes:
             s.boxes = new_boxes

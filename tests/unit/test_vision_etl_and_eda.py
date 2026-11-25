@@ -804,3 +804,116 @@ def test_clean_drop_occluded_produces_nc3_names_and_drops_cid3_boxes(tmp_path: P
     assert "streetlight_occluded" in man4["target_names"].values()
     assert "nc: 4" in res4.data_yaml_path.read_text(encoding="utf-8")
     assert man4["clean_stats"]["occluded_deleted"] == 0
+
+
+class _FakeXywhn:
+    """`b.xywhn[0].tolist()` 语义替身：`predict` 返回的归一化 `[xc, yc, w, h]`."""
+
+    def __init__(self, vals: list[float]) -> None:
+        self._vals = vals
+
+    def tolist(self) -> list[float]:
+        return list(self._vals)
+
+
+class _FakeLampBox:
+    """`damaged` 灯头过滤伪推理框：`.cls[0]` + `.xywhn[0].tolist()` 接口."""
+
+    def __init__(self, cls_id: int, xywhn: list[float]) -> None:
+        self.cls = [cls_id]
+        self.xywhn = [_FakeXywhn(xywhn)]
+
+
+class _FakeLampResult:
+    def __init__(self, boxes: list[_FakeLampBox]) -> None:
+        self.boxes = boxes
+
+
+class _FakeLampModel:
+    """`damaged` 灯头过滤伪模型：按文件名返回不同灯具检测框（`conf>=0.25`）."""
+
+    def __init__(self, by_stem: dict[str, list[list[float]]]) -> None:
+        self._by_stem = by_stem
+
+    def predict(
+        self, path: str, *, imgsz: int, conf: float, iou: float, verbose: bool
+    ) -> list[_FakeLampResult]:
+        stem = Path(path).stem
+        return [_FakeLampResult([_FakeLampBox(0, b) for b in self._by_stem.get(stem, [])])]
+
+
+def test_clean_damaged_lamp_filter_drops_nonlamp_boxes(tmp_path: Path, monkeypatch: Any) -> None:
+    """`clean_damaged_lamp_model`:`d3` `damaged` GT「与任一灯具检测框 `IoU>=0.1`
+    或 `GT` 中心点落灯具框内」保留，否则剔除（`d3` 杆体/基座误标 `damaged` `~82%`）."""
+    src = tmp_path / "d3_src"
+    specs = [
+        # s0：damaged GT 在右下（0.9,0.9,0.1x0.1）——无灯具检测框 → 剔除
+        ("train", "s0", "2 0.9 0.9 0.1 0.1\n0 0.2 0.2 0.1 0.1\n"),
+        # s1：damaged GT 在中心（0.5,0.5,0.2x0.2）——灯具框 0.5,0.5,0.3x0.3 覆盖 → 保留
+        ("train", "s1", "2 0.5 0.5 0.2 0.2\n"),
+        # s2：damaged GT 在（0.1,0.1,0.1x0.1），灯具框 0.9,0.9,0.2x0.2 不重叠 → 剔除
+        ("train", "s2", "2 0.1 0.1 0.1 0.1\n1 0.5 0.5 0.1 0.1\n"),
+    ]
+    _seed_minimal_source(
+        src,
+        specs=specs,
+        yaml_names={0: "streetlight_on", 1: "streetlight_off", 2: "streetlight_damaged"},
+    )
+
+    # 伪 ultralytics：`YOLO` 返回按 stem 分发检测框的伪模型；`s0`/`s2` 无灯具框 → 删
+    import types
+
+    fake_mod = types.ModuleType("ultralytics")
+    # 动态 `types.ModuleType` 无类型化属性——赋值注入伪 `YOLO` 模型工厂
+    fake_mod.YOLO = lambda _p: _FakeLampModel(  # type: ignore[attr-defined]  # noqa: E731
+        {
+            "s1": [[0.5, 0.5, 0.3, 0.3]],  # 中心灯具框覆盖 s1 damaged
+        }
+    )
+    monkeypatch.setitem(sys.modules, "ultralytics", fake_mod)
+    monkeypatch.setenv("YOLO_AUTOINSTALL", "False")
+
+    out = tmp_path / "out_d3"
+    res = prepare_dataset(
+        DatasetPrepConfig(
+            sources=(DatasetSourceSpec(name="d3", root_dir=src),),
+            output_dir=out,
+            dedupe_phash=False,
+            clean_damaged_lamp_model=tmp_path / "fake_best.pt",
+            allow_small_groups=True,
+        )
+    )
+    manifest = json.loads(res.manifest_path.read_text(encoding="utf-8"))
+    cstats = manifest["clean_stats"]
+
+    # `s0`/`s2` damaged GT 无灯具重叠 → 删；`s1` damaged GT 有灯具重叠 → 保留
+    assert cstats["damaged_dropped_nonlamp_boxes"] == 2
+    assert cstats["damaged_kept_lamp_overlap"] == 1
+    assert cstats["damaged_dropped_nonlamp_images"] == 2
+
+    # 输出 labels：s0/s2 无 cid==2 行；s1 有 cid==2 行
+    out_labels = {p.stem: p for p in (out / "labels").rglob("*.txt")}
+    s0_lines = [
+        ln
+        for lbl in out_labels.values()
+        if "s0" in lbl.stem
+        for ln in lbl.read_text().splitlines()
+        if ln.strip()
+    ]
+    assert not any(ln.startswith("2 ") for ln in s0_lines), out_labels
+    s2_lines = [
+        ln
+        for lbl in out_labels.values()
+        if "s2" in lbl.stem
+        for ln in lbl.read_text().splitlines()
+        if ln.strip()
+    ]
+    assert not any(ln.startswith("2 ") for ln in s2_lines), out_labels
+    s1_lines = [
+        ln
+        for lbl in out_labels.values()
+        if "s1" in lbl.stem
+        for ln in lbl.read_text().splitlines()
+        if ln.strip()
+    ]
+    assert any(ln.startswith("2 ") for ln in s1_lines), out_labels
