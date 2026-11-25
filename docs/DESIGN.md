@@ -1157,7 +1157,9 @@ WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
 - **白天灭灯抑制（`DAYTIME_UNPOWERED_EXPECTED`）**：`scene_lighting == "day"` 下检出 `streetlight_off` 时，置 `candidate_fault_type=null`、`is_fault_candidate=false`、`fusion_status="daytime_unpowered_suppressed"`；若全批图无任何 `is_fault_candidate=true`，不建故障单、不锁点位，仅将证据写入 `fault_evidences`（`ticket_id=NULL`）并返回 `200 {ticket: null, evidences: [...]}`。
 - **✅ `D-30` 已定案：夜间正常亮灯 `streetlight_on` 回传前端作参照框**：用户已明确裁决「回传」。夜间/黄昏检测到正常亮灯 `streetlight_on` 时，**回传至前端 `candidates[]`**：置 `candidate_fault_type=null`、`visual_signal_state="NORMAL_LIT"`、**`is_fault_candidate=false`**、`suggested_severity_hint="none"`。巡查员可在图上明确区分「**AI 看到且判定正常亮灯**」与「**AI 未检出**」，避免漏报误判。
 
-#### 四类检测标签 → 业务枚举映射与 `FaultCandidateResult`
+#### 检测标签 → 业务枚举映射与 `FaultCandidateResult`
+
+> **`nc=3`/`occluded` 弃用口径（`D-41`/`task-165`/`merged_v7`）**：`merged_v7` 起训练集为 `nc=3`（`names = [streetlight_on, streetlight_off, streetlight_damaged]`，`occluded` 由 `d1` 独源 `227` 框约 `95%` 错标 + 自证救回率 `~22%` 弃用——`D-41`）；下表 `streetlight_occluded` 行保留**仅为 `API` `fault_type=OCCLUDED` 手工报障兼容**（`merged_v7`/`streetlight_v3` 模型不产出该 `raw_class`，`mapping.py:164-167, 352-353` 分支与 `contract.py:20-23` 字面量仅契约兼容保留）。
 
 | YOLO `raw_class` | 场景 | `candidate_fault_type` | `visual_signal_state` | `is_fault_candidate` |
 |---|---|---|---|---|
@@ -1166,7 +1168,7 @@ WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
 | `streetlight_off` | `night` / `twilight` | `LAMP_OUT` | `LAMP_OUT` | `true` |
 | `streetlight_off` | `day` | `null` | `DAYTIME_UNPOWERED_EXPECTED` | **`false`**（白天正常灭灯抑制） |
 | `streetlight_damaged` | 昼 / 夜 | `FIXTURE_DAMAGED` | `FIXTURE_DAMAGED` | `true` |
-| `streetlight_occluded` | 昼 / 夜 | `OCCLUDED` | `OCCLUDED` | `true` |
+| `streetlight_occluded`（已弃用，仅手工报障兼容） | 昼 / 夜 | `OCCLUDED` | `OCCLUDED` | `true` |
 
 > **输出契约核心字段**：每图独立 `FaultCandidateResult` 存 `fault_evidences.ai_result_json`，同时提供 `bbox_norm`（`0.0..1.0` 供前后端多端缩放渲染）与 `bbox_px`（像素坐标），恒注入 `requires_inspector_confirmation=true`、`replaces_electrical_safety_check=false` 与 `disclaimer`；当采用 `baseline_pretrained_opencv` 模式时恒置 `ai_is_baseline_mode=true` 且 `max_fused_confidence <= 0.65`。
 
@@ -1368,3 +1370,4 @@ WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
 | 2026-11-24（task-77） | **视觉分辨率 1280 与长周期训练参数同步**：① 按 `D-28` 与 D1 全量 EDA（8,428 图 `81.86%` 为 `1280×720`）将 §1.1 `YOLO_IMG_SIZE`、§5.3 `imgsz` 与 ONNX 静态输入 `[1, 3, 1280, 1280]` 及 §7 `TS-2` 同步升级为 **`1280`**（`2×640` 1:1 零下采样并指向 `docs/TRAIN.md` §2.2）；② §5.3 与 §8.1 远端训练参数同步为 **`epochs=500, patience=20`**（配合 `early_stopping_diagnostics` 早停源码诊断与可选 `--mosaic-polish-epochs`，详见 `docs/TRAIN.md` §3）；③ §1.1 / §5.3 / §8.1 登记 `src/tomori/vision/` 已落盘 11 个模块（新增只读 EDA 工具 `eda.py`，另有 `dataset_prep.py`、`trainer.py`，共 13 个 `.py` 文件）；同步修正 `task-26` 旧记录中 `imgsz` 字面残留 | `task-77`（`D-28` 1280 + 500 epochs/patience 20 + `eda.py` + `TRAIN.md` EDA 引用） |
 | 2026-11-24（task-109） | **文档-实现一致性同步**：以已入库 `web/src/views/inspection/InspectionReportView.vue:660` 为准，将 §5.2 `D3` 视觉降级横幅旧前端锚点更正为 **`data-testid="inspection-vision-disabled"`**，并补注其携带的 `data-code` 与 `data-fallback-action="MANUAL_REPORT"` 可测属性 | `tester` `task-106` 上报 + `task-109` Lead 裁决 |
 | 2026-11-25（task-156） | **状态机边数两口径统一**：§0 汇总表、§2 段首与各机器标题（A/B/C/D）边数表述统一为「**`36` 转移规则条目**（`A15+B6+C8+D7`，每条守卫+审计 `action` 一个编号）**与** `(from,to)` 字面图边 **`47`**（`A16+B8+C14+D9`）」双口径并补口径说明脚注（A8 单条规则覆盖 `DISPATCHED → {PENDING_DISPATCH, MANUAL_REVIEW}` `2` 边等）；消除与 `state_machine.py` 展开图边 `47` 易混的旧单口径写法 | `auditor` `task-81` `P3-1` + `task-156`（与 `backend-dev` `task-155` 代码注释同口径） |
+| 2026-11-25（task-170） | **`nc=3`/`occluded` 弃用同步**：§5.1 `raw_class` → 业务枚举映射表保留 `streetlight_occluded` 行并标注「已弃用，仅 `API` `fault_type=OCCLUDED` 手工报障兼容」（`merged_v7`/`streetlight_v3` `nc=3` 模型不产出该 `raw_class`）；补 `nc=3`/`occluded` 弃用口径说明（`D-41`/`task-165`） | 用户修订指令 + `task-170` |
