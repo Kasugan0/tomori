@@ -566,19 +566,19 @@ A
 
 ## D-41 ✅ `streetlight_occluded` 类明确弃用（`nc=3`）
 
-**问题**：`merged_v5` 的 `streetlight_occluded` 类（`d1` 独源 `227` 框）是否值得继续参与训练？
+**问题**：`merged_v5` 的 `streetlight_occluded` 类（`d1` 源 `lamp_occluded` `235` 框 / `merged_v5` 合并 `227` 框，`8` 去重损失）是否值得继续参与训练？
 
 **用户裁决原话**（2026-11-25）：「`occluded` 明确不做。我们就做三类。」「数据集按照此标准修改后放行训练。」
 
 **实证依据（`task-158`/`task-161`/`task-162` 逐帧画框复核）**：
-- `d1` `lamp_occluded` 全量 `235` 框目检：约 **`95%` 为错标**——楼窗亮块、传感器/设备盒、树叶遮挡、高架桥灯臂等非「枝叶遮挡灯头」语义；
+- `d1` `lamp_occluded` 源 `235` 框（`merged_v5` 合并后 `streetlight_occluded` `227` 框，`8` 框去重损失——源口径 `235` vs 合并口径 `227`）目检：约 **`95%` 为错标**——楼窗亮块、传感器/设备盒、树叶遮挡、高架桥灯臂等非「枝叶遮挡灯头」语义；
 - 用 `streetlight_v1` `best.pt`（`conf>=0.65` 且 `IoU>=0.1`）自证重标：**仅 `39` 框（`~22%`）可救回改判 `on`**，其余 `188` 框删除——**无可救药**；
 - 全平台调研（`task-91` 已证）`d1` 之外**无第二个公开 `occluded` 检测源**，合成遮挡与阶段二自采是仅存补全路径。
 
 **定案结论**：
 - 训练集明确 `nc=3`：`names = [streetlight_on, streetlight_off, streetlight_damaged]`（`occluded` 不进入训练与评测）；
 - **`API` `fault_type=OCCLUDED` 保留**：`streetlight_occluded` 仍是合法「遮挡」业务语义，`fault_type` / `fault_candidate` / `ck_fault_tickets_fault_type_enum` / `contract.py` / `mapping.py` 分支仅保留作**巡查员手工报障**兼容；
-- `mapping.py:164-167`/`352-353` 与 `contract.py:20-23` 保留字面量 + `task-165` 弃用注释。
+- `mapping.py:164-167`/`350-356` 与 `contract.py:20-23` 保留字面量 + `task-165` 弃用注释。
 
 **依据**：`.team/notes/vision-dev/{task158-root-cause,task161-salvage-analysis,task162-merged-v6-report,task165-nc3-code-report}.md` 与 `merged_v6/prep_manifest.json`（`occluded` 自证 `39` 改判 `on` + 删 `188` + `--drop-occluded` 兜底清零）。
 **状态**：✅ **已裁定**（2026-11-25，用户明示弃用）
@@ -608,7 +608,7 @@ A
 
 **问题**：`nc=3`/`nc=4` 不同 `data.yaml` 下 `trainer.py` 应读哪个类表？
 
-**定案**：`RAW_CLASSES`（`config.py:92-97`）降为**词汇母集/上限**，`data.yaml.names` 为训练类表权威源——`validate_data_yaml` 校验 `names`/`nc` 为 `RAW_CLASSES` 的**前缀子集**（`trainer.py:160-188`，返回 `(data_dict, class_names, train_count)`），`run_training_pipeline` 全程读 `data.yaml.names`（`:365-367`）；同一份 `trainer.py`（`726` 行）兼容 `merged_v5`（`nc=4`）/`merged_v6`（`nc=4`）/`merged_v7`（`nc=3`）。
+**定案**：`RAW_CLASSES`（`config.py:92-97`）降为**词汇母集/上限**，`data.yaml.names` 为训练类表权威源——`validate_data_yaml` 校验 `names`/`nc` 为 `RAW_CLASSES` 的**前缀子集**（`trainer.py:160-202`，返回 `(data_dict, class_names, train_count)`），`run_training_pipeline` 全程读 `data.yaml.names`（`:365-367`）；同一份 `trainer.py`（`731` 行）兼容 `merged_v5`（`nc=4`）/`merged_v6`（`nc=4`）/`merged_v7`（`nc=3`）。
 
 **依据**：`.team/notes/vision-dev/task167-trainer-nc3-report.md`（`+21/-11` 行净，含 `nc=4`/`nc=3` 校验、`dry-run` 与跳类拒绝实测）；`auditor` `batch24-signoff.md` 第 `35-39` 行逐项核验。
 **状态**：✅ **已裁定**（`task-167` 定案并验收）
@@ -722,6 +722,6 @@ $ git status --porcelain audits/
 | **2026-11-24** | **用户批量裁决落盘（`task-26`）**：把用户在 `D-01`–`D-18` 亲手写下的答复**原样保留**，团队结论一律**追加在其下方**（未删除用户一个字）。新增 **13 条 ✅ 已裁定**：`D-01`（已提供 `ssh -p 13142`，并据实测补环境基线 + 2 个风险项）、`D-02`（15 MiB）、`D-04`（团队自决 `121 → 128`）、`D-05`（维持 `<2.1`）、`D-06`（只用 `yolo26s`、取消本地冒烟）、`D-07`（单人 rebase-only）、`D-10`（仅 PG 17）、`D-12`（显示名定稿）、`D-14`（2 轮）、`D-15`（72h）、`D-16`（3 单）、`D-17`（不实现 KPI）、`D-18`（不承诺检出率）。**4 条仍待你回答**：`D-11`（🔴 **结论反转**：郑州规章无 `P1`–`P4`、无分钟数，「不允许更严/更松」⇒ 现行四档无论怎么调都不合规，需选甲/乙/丙路径）、`D-03`（🔴 你指向的 `REQUIREMENTS.md` **无张数条款**，需补充）、`D-08`（🔴 你在问「这是什么」，团队已解释，待回 `a/b/c`）、`D-29`（🔴 数据集 D2 是否发函）。`D-13` 保留 🟡 并注明「『我不知道』≠ 批准，权重无任何规范依据」。现行状态分布 **`13 ✅ / 4 🔴 / 12 🟡 / 2 🟢`** | `task-26`（用户 `docs/DECISION.md` 手写裁决 + `.team/notes/research/zhengzhou-lighting-rules.md` 取证） |
 | **2026-11-24** | **按用户纠偏彻底定案（`task-29`）**：消除工程与协调问题向用户的「认知卸载」，保留全部用户原话；① `D-11` 废除全部无依据四档分钟数与甲/乙/丙上推，唯一锁定郑州市令第 152 号（2020 第 237 号二次修正）第 19 条第 3 款 `48h` 基线与第 24 条紧急处置标志；② `D-13` 废除无依据权重魔数并修复 `100×100` Bug，改用 `business_rules['grading_rules']` 表驱动确定性规则分级（144 组合全覆盖，`P4` 同受 48h 约束）；③ `D-03` 协调统一全链路 `1..10`；④ `D-08` 工程定案 `mypy`；⑤ `D-01` 写入 `/root/autodl-tmp` 确认与 `uv` 由 `dev-ops` 自查落实，消除风险项上推；⑥ `D-06`/`D-28` 彻底清除 `Track B/C`/`1280`/`yolo26n`/本地冒烟表述，统一 `yolo26s.pt` + `1024`；⑦ 工程实现与阶段二首验项（`D-19`–`D-27`、`D-31`、`D-40`）全部转 🟢 工程定案，仅留 `D-29`（🔴 版权）与 `D-30`（🟡 界面偏好）。全篇 40 条分布校准为 **`18 ✅ / 1 🔴 / 1 🟡 / 20 🟢`**（32 条独立状态行 **`18 ✅ / 1 🔴 / 1 🟡 / 12 🟢`** + 第四档表 8 行 `🟢`） | 用户纠偏指令 + `task-29` |
 | **2026-11-24** | **用户终局裁决落盘与 5 文档体系收口（`task-44`）**：① 原样保留 `D-29`、`D-30` 用户原话并落盘最终结论：`D-29` ✅ 个人本地项目直接使用公开/自采数据集，无需发函申请商用授权（同时在 `docs/DESIGN.md` §5.3 如实记录 D1–D7 原始许可证元数据）；`D-30` ✅ `streetlight_on` 置 `is_fault_candidate=false` 回传前端作参照（同步 `docs/DESIGN.md` §5.1、`docs/REQUIREMENTS.md` §6.2、`docs/API.md` §5.2）；② 全篇 40 条收口为 **`20 ✅ / 0 🔴 / 0 🟡 / 20 🟢`**（32 条独立状态行 **`20 ✅ / 0 🔴 / 0 🟡 / 12 🟢`**，四档 `9-8-14-9` 零待决）；③ 配合文档体系精简合并为 5 文档（`DECISION.md` / `REQUIREMENTS.md` / `DESIGN.md` / `API.md` / `RUNBOOK.md`），将正文及附录 A/B 现行指针统一更新至 `docs/DESIGN.md` 对应章节 | 用户 `D-29`/`D-30` 裁决 + `task-44` |
-| **2026-11-25（task-170）** | **用户修订裁决与 `nc=3`/`merged_v6`/`merged_v7` 落盘**：追加 **`D-41`**（`streetlight_occluded` 类明确弃用——`d1` 独源 `227` 框约 `95%` 错标、`~22%` 自证救回率，模型转 `nc=3` 但 `API` `fault_type=OCCLUDED` 保留手工报障）、**`D-42`**（`merged_v6`/`merged_v7` 清洗管线——`mean_v>100` 且全 `on` 删帧 `3,088` + `occluded` 自证 `conf>=0.65`/`IoU>=0.1` 改判 `on` `39` 框删 `188` 框 + `damaged` 全保 `1,423` + `--drop-occluded` 兜底）、**`D-43`**（`trainer.py` 改以 `data.yaml.names` 为训练类表权威源，`RAW_CLASSES` 降为词汇母集）三条新用户裁决；编号顺延为 `D-41`–`D-43`（`D-31`–`D-40` 已占用）；全篇由 `40` 条（`20 ✅`）收口为 **`43` 条（`23 ✅`）**，第三档 `14 → 17` | 用户修订指令 + `task-170` |
+| **2026-11-25（task-170）** | **用户修订裁决与 `nc=3`/`merged_v6`/`merged_v7` 落盘**：追加 **`D-41`**（`streetlight_occluded` 类明确弃用——`d1` 独源 `235` 框（`merged_v5` 合并 `227` 框，`8` 去重损失）约 `95%` 错标、`~22%` 自证救回率，模型转 `nc=3` 但 `API` `fault_type=OCCLUDED` 保留手工报障）、**`D-42`**（`merged_v6`/`merged_v7` 清洗管线——`mean_v>100` 且全 `on` 删帧 `3,088` + `occluded` 自证 `conf>=0.65`/`IoU>=0.1` 改判 `on` `39` 框删 `188` 框 + `damaged` 全保 `1,423` + `--drop-occluded` 兜底）、**`D-43`**（`trainer.py` 改以 `data.yaml.names` 为训练类表权威源，`RAW_CLASSES` 降为词汇母集）三条新用户裁决；编号顺延为 `D-41`–`D-43`（`D-31`–`D-40` 已占用）；全篇由 `40` 条（`20 ✅`）收口为 **`43` 条（`23 ✅`）**，第三档 `14 → 17` | 用户修订指令 + `task-170` |
 | **2026-11-24** | **终审一致性收口（`task-52`）**：同步更新 `D-29`/`D-18` 正文消除旧方案残留、修正 `D-14`（`FR-26` / `FR-27`）与 `D-16`（`FR-21`）历史 `FR` 编号，并移除附录 A/B 中 `U-4` 的无效 `§8` 空指针（收敛至 `docs/DESIGN.md` §3.2） | 终审交叉审计收口（`task-52`） |
 | **2026-11-24（task-77）** | **用户复议 `D-28` 升级定案（`task-76` / `task-77`）**：① 保留全部历史 19 项用户原话并追加 `D-28` 用户复议原话与团队 EDA/源码复核结论，将 `D-28` 由 `1024` 升级为固定 `1280`（`2×640`，D1 全量 8,428 图实测 `1.0×` 零下采样、`<2 P3 格` 极小目标 `14.72% → 5.81%`、本地 CPU ORT `median 383.40ms`、远端 `batch=8` / `11.75 GiB`），并锁定 `epochs=500, patience=20`（`trainer.py` 内置 `early_stopping_diagnostics` 与 `--mosaic-polish-epochs`）；② 同步更新第三档导语、`D-06` 与 `D-27`，完整 EDA 实测与训练超参落地 `docs/TRAIN.md` §2.2 & §3；③ 全篇维持 40 条（`9-8-14-9`、`20 ✅ / 0 🔴 / 0 🟡 / 20 🟢`）零待决 | 用户复议 `D-28` 分辨率与训练早停裁决 + `task-76` / `task-77` |

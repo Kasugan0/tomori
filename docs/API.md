@@ -296,7 +296,7 @@
 
 > **正常亮灯参照回传（`D-30` 定案）**：视觉检出的夜间正常亮灯 `streetlight_on` 按 `D-30` 定案以 `is_fault_candidate=false` 随 `ai_result_json` 回传前端供巡查员参照；若图中仅有 `streetlight_on` 而无任何 `is_fault_candidate=true`，同样走第 10 步 `200 + {ticket: null, evidences: [...]}` 留证不建票（详见 `docs/DESIGN.md` §5.1）。
 >
-> **`nc=3`/`occluded` 弃用口径（`D-41`/`merged_v7`/`streetlight_v3`）**：`merged_v7` 起视觉模型 `nc=3`，`ai_result_json.raw_class` 实际仅可能为 `streetlight_on`/`streetlight_off`/`streetlight_damaged`（`streetlight_occluded` 已弃用——`d1` 独源 `227` 框约 `95%` 错标、自证救回 `~22%` 无可救药）；**`fault_type=OCCLUDED` 仍为合法业务枚举**（供巡查员手工报障/PATCH 更正，`fault_evidences`/`fault_tickets` 契约不变）。
+> **`nc=3`/`occluded` 弃用口径（`D-41`/`merged_v7`/`streetlight_v3`）**：`merged_v7` 起视觉模型 `nc=3`，`ai_result_json.raw_class` 实际仅可能为 `streetlight_on`/`streetlight_off`/`streetlight_damaged`（`streetlight_occluded` 已弃用——`d1` 独源 `235` 框（`merged_v5` 合并 `227` 框，`8` 去重损失）约 `95%` 错标、自证救回 `~22%` 无可救药）；**`fault_type=OCCLUDED` 仍为合法业务枚举**（供巡查员手工报障/PATCH 更正，`fault_evidences`/`fault_tickets` 契约不变）。
 
 ### 5.1 **五步错误码的优先级**（Leads's mandated order）
 

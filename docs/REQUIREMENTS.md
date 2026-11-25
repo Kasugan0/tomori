@@ -91,6 +91,8 @@
 
 > **编号权威**：本表。`VC-01`..`VC-29` 与 `FR-01`..`FR-29` **1:1 绑定**（详见 §4 追溯矩阵）。
 > **状态声明**：本阶段全部为 `未实现` —— **阶段一只做设计，没有任何可运行的应用源码**。
+>
+> **快照口径注记**：`FR-xx`/`VC-xx` 的「未实现」状态为 **阶段一设计期冻结快照**（`REQUIREMENTS.md` 在阶段一冻结时定稿）。`auditor` `task-183` 追溯矩阵已注明阶段二已完结（`60` 端点 + `streetlight_v3`/`nc=3` 训练完结 + `118` 单测/集成 + `31` E2E 全绿），此处**不改状态值本身**，仅标注时点边界；最新实现状态以 `docs/DESIGN.md`/`README.md`/`docs/TRAIN.md` 当前口径为准。
 
 ### 3.1 UC-01 认证与授权（FR-01..FR-04）
 
@@ -243,7 +245,7 @@
    - 灯具**亮/灭**与**遮挡**有公开检测数据集 `ngocleltt/lamp-state-detection`（8,428 张，CC-BY-4.0）支撑；
    - **灯具破损（`FIXTURE_DAMAGED`）**：需求允许写「系统应支持从静态照片识别明显破损」，但**阶段一不承诺任何具体检出率/精确率指标**（`D-18` 已裁定不承诺；无训练、无验证集、无实测，严禁把未验证数字写为需求承诺，守 `F14`）。
 4. **数据集使用边界（`D-29` ✅ 已裁定直接使用）**：用户已于 `docs/DECISION.md` `D-29` 明确批示——本项目为个人本机项目，所有公开与自采数据集**无需考虑商业授权合规性或发函申请，可直接用于训练与验证**；同时，各公开数据集的**原始许可元数据与仓库实测质量事实**（如 CC-BY-4.0、Roboflow/GitHub 无 LICENSE、占位仓库、无数据文件等）仍按 `F14` 如实记录于 `docs/DESIGN.md` §5.3，不虚构「开源」属性。
-5. **`vision/` 目录当前状态（表述纪律）**：仓库根 `vision/` 下现有 **8 个 `.py` 文件**（`__init__.py`/`config.py`/`contract.py`/`errors.py`/`image_io.py`/`metrics.py`/`whitelist.py`/`baseline.py`）来自已撤回 `task-10` 的预研草稿，**未经运行验证、未经测试、未纳入阶段一交付范围**。阶段一唯一正确表述为「阶段二规划目录；当前存在未经运行验证的预研草稿」，**`FR-12` 真实状态仍为「未实现」**。
+5. **`vision/` 目录当前状态（表述纪律）**：原根级 `vision/` 预研草稿（`__init__.py`/`config.py`/`contract.py`/`errors.py`/`image_io.py`/`metrics.py`/`whitelist.py`/`baseline.py`）**已于阶段二迁入 `src/tomori/vision/`**——现含 **13 个 `.py` 文件**（`baseline`/`client`/`config`/`contract`/`dataset_prep`/`eda`/`errors`/`image_io`/`__init__`/`mapping`/`metrics`/`trainer`/`whitelist`），并新增 `client.py`/`mapping.py`/只读 `eda.py`/`dataset_prep.py`/`trainer.py`，原根级 `vision/` 仅留运行时产物 `weights/`、`reports/`（gitignored）。阶段一表述「阶段二规划目录；当前存在未经运行验证的预研草稿」对应冻结基线口径；阶段二已完结（`streetlight_v3`/`nc=3` 权重已训成产出并经 `sha256sum -c` 校验、`D-30`/`damaged` 验收通过），**`FR-12` 状态见上方状态声明快照注记（阶段一设计期快照）**。
 
 ---
 
