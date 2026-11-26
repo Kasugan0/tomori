@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from tests.integration.conftest import (
     auth_headers_for,
+    build_confirm_payload,
     clear_settings_cache,
     make_animated_bytes,
     make_minimal_png_with_dimensions,
@@ -352,10 +353,10 @@ async def test_ai_candidates_step10_zero_fault_d30_orphan_and_step11_draft_ticke
     assert r_ann.status_code == 200
     assert r_ann.headers["content-type"].startswith("image/")
 
-    # Confirm draft -> PENDING_DISPATCH + 48h SLA
+    # Confirm draft -> PENDING_DISPATCH + 48h SLA (task-25: per-candidate decisions)
     r_conf = await api_client.post(
         f"/api/v1/tickets/{draft['id']}/confirm",
-        json={"safety_flag": False},
+        json=build_confirm_payload(b11["evidences"]),
         headers={**insp_hdr, "Idempotency-Key": new_idem_key("ai-conf")},
     )
     assert r_conf.status_code == 200

@@ -86,14 +86,30 @@ class ReviewResolveIn(BaseModel):
 
     resolution: ReviewResolution
     reason: str = Field(min_length=1, max_length=512)
+    # SPECIAL_CLOSE 督促留证三要素（郑州市令第 152 号第 19 条第 3 款）：
+    # 督促时间 / 受督促单位 / 督促凭证证据（先经 POST /tickets/{id}/evidences 上传）
+    urged_at: datetime | None = None
+    urged_unit: str | None = Field(default=None, max_length=128)
+    urge_evidence_ids: list[int] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _validate_reason(self) -> ReviewResolveIn:
         trimmed = self.reason.strip()
         if not trimmed:
             raise ValueError("reason 不能为空白")
-        if self.resolution == "SPECIAL_CLOSE" and len(trimmed) < 10:
-            raise ValueError("SPECIAL_CLOSE 理由长度不少于 10 个字符")
+        if self.resolution == "SPECIAL_CLOSE":
+            if len(trimmed) < 10:
+                raise ValueError("SPECIAL_CLOSE 理由长度不少于 10 个字符")
+            if self.urged_at is None:
+                raise ValueError("SPECIAL_CLOSE 必须提供督促时间 urged_at")
+            if self.urged_at.tzinfo is None or self.urged_at.utcoffset() is None:
+                raise ValueError("urged_at 必须携带明确时区偏移")
+            if not (self.urged_unit and self.urged_unit.strip()):
+                raise ValueError("SPECIAL_CLOSE 必须提供受督促单位 urged_unit")
+            if not self.urge_evidence_ids:
+                raise ValueError("SPECIAL_CLOSE 必须提供督促凭证 urge_evidence_ids")
+        elif self.urged_at is not None or self.urged_unit is not None or self.urge_evidence_ids:
+            raise ValueError("urged_at / urged_unit / urge_evidence_ids 仅 SPECIAL_CLOSE 允许携带")
         return self
 
 

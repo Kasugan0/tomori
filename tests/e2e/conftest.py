@@ -73,6 +73,7 @@ def _e2e_env() -> dict[str, str]:
     env.update(
         {
             "APP_ENV": "e2e",
+            "SEED_DEMO": "true",
             "DATABASE_URL": E2E_DATABASE_URL,
             "E2E_DATABASE_URL": E2E_DATABASE_URL,
             "TEST_DATABASE_URL": E2E_DATABASE_URL,

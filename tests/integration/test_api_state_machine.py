@@ -10,7 +10,7 @@ from httpx import AsyncClient
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
-from tests.integration.conftest import auth_headers_for, new_idem_key
+from tests.integration.conftest import auth_headers_for, make_static_image, new_idem_key
 from tomori.models.dispatch_record import DispatchRecord
 from tomori.models.notification_task import NotificationTask
 from tomori.models.rework_order import ReworkOrder
@@ -166,7 +166,16 @@ async def test_ticket_and_dispatch_terminals_closed_cancelled_completed_rejected
     for url, body in (
         (f"/api/v1/tickets/{t_cancel['id']}/cancel", {"cancel_reason": "again"}),
         (f"/api/v1/tickets/{t_cancel['id']}/regrade", {"priority": "P1", "reason": "bad"}),
-        (f"/api/v1/tickets/{t_cancel['id']}/confirm", {"safety_flag": False}),
+        (
+            f"/api/v1/tickets/{t_cancel['id']}/confirm",
+            {
+                "fault_type": "LAMP_OUT",
+                "safety_flag": False,
+                "candidate_decisions": [
+                    {"evidence_id": 1, "candidate_id": "x", "decision": "confirmed"}
+                ],
+            },
+        ),
     ):
         r_bad = await api_client.post(
             url,
@@ -430,9 +439,25 @@ async def test_rework_round2_threshold_and_round3_manual_review_three_exits(
     assert r_short.status_code == 422
     assert r_short.json()["error"]["code"] == "VALIDATION_ERROR"
 
+    # SPECIAL_CLOSE requires urged_at/urged_unit/urge_evidence_ids (evidence on this ticket)
+    r_ev = await api_client.post(
+        f"/api/v1/tickets/{tid_b}/evidences",
+        data={"evidence_type": "INSPECTION_PHOTO"},
+        files=[("files", ("urge.jpg", make_static_image("JPEG"), "image/jpeg"))],
+        headers=insp_hdr,
+    )
+    assert r_ev.status_code == 201, r_ev.text
+    urge_evidence_id = int(r_ev.json()[0]["id"])
+
     r_exit2 = await api_client.post(
         f"/api/v1/tickets/{tid_b}/review-resolve",
-        json={"resolution": "SPECIAL_CLOSE", "reason": "经核实已合并市政改造工程特批关单"},
+        json={
+            "resolution": "SPECIAL_CLOSE",
+            "reason": "经核实已合并市政改造工程特批关单",
+            "urged_at": datetime.now(UTC).isoformat(),
+            "urged_unit": "郑州市市政设施维护单位",
+            "urge_evidence_ids": [urge_evidence_id],
+        },
         headers={**admin_hdr, "Idempotency-Key": new_idem_key("rev-e2")},
     )
     assert r_exit2.status_code == 200

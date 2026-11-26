@@ -47,6 +47,7 @@ export const useInspectionStore = defineStore('inspection', () => {
 
   const manualMode = ref(false)
   const faultType = ref<FaultType>('LAMP_OUT')
+  const selectedMainFaultType = ref<FaultType | null>(null)
   const title = ref('')
   const description = ref('')
   const manualNote = ref('')
@@ -66,7 +67,7 @@ export const useInspectionStore = defineStore('inspection', () => {
       const list = result?.candidates ?? []
       const analysisId = result?.analysis_id ?? ev.analysis_id ?? String(ev.id)
       for (const candidate of list) {
-        const key = `${analysisId}:${candidate.candidate_id}`
+        const key = `${ev.id}:${candidate.candidate_id}`
         const entry = decisions.value[key] ?? { decision: 'pending' }
         out.push({
           flatIndex,
@@ -87,6 +88,15 @@ export const useInspectionStore = defineStore('inspection', () => {
   const faultCandidates = computed(() =>
     flattenedCandidates.value.filter((item) => item.candidate.is_fault_candidate),
   )
+
+  const retainedFaultTypes = computed<FaultType[]>(() => {
+    const types = flattenedCandidates.value.map((item) => {
+      if (item.decision === 'confirmed' && item.candidate.is_fault_candidate) return item.candidate.candidate_fault_type
+      if (item.decision === 'modified') return item.editedFaultType
+      return null
+    })
+    return [...new Set(types.filter((type): type is FaultType => type != null))]
+  })
 
   const referenceCandidates = computed(() =>
     flattenedCandidates.value.filter((item) => !item.candidate.is_fault_candidate),
@@ -115,9 +125,13 @@ export const useInspectionStore = defineStore('inspection', () => {
   )
 
   const allFaultCandidatesDisposed = computed(
+    () => faultCandidates.value.every((item) => item.decision !== 'pending'),
+  )
+
+  const allFaultCandidatesRejected = computed(
     () =>
       faultCandidates.value.length > 0 &&
-      faultCandidates.value.every((item) => item.decision !== 'pending'),
+      faultCandidates.value.every((item) => item.decision === 'rejected'),
   )
 
   function setFiles(nextFiles: File[]): void {
@@ -142,12 +156,12 @@ export const useInspectionStore = defineStore('inspection', () => {
     hasAnalyzed.value = true
     visionFallback.value = null
     decisions.value = {}
+    selectedMainFaultType.value = null
 
     for (const ev of res.evidences) {
       const result = ev.ai_result_json ?? (ev.candidates ? (ev as FaultCandidateResultOut) : null)
-      const analysisId = result?.analysis_id ?? ev.analysis_id ?? String(ev.id)
       for (const cand of result?.candidates ?? []) {
-        decisions.value[`${analysisId}:${cand.candidate_id}`] = { decision: 'pending' }
+        decisions.value[`${ev.id}:${cand.candidate_id}`] = { decision: 'pending' }
       }
     }
 
@@ -165,6 +179,14 @@ export const useInspectionStore = defineStore('inspection', () => {
     }
   }
 
+  function resumeDraft(ticket: FaultTicketOut, draftEvidences: FaultEvidenceOut[]): void {
+    reset()
+    lightingPointId.value = ticket.lighting_point_id
+    regionId.value = ticket.region_id
+    facilityAssetId.value = ticket.facility_asset_id
+    applyAnalysisResponse({ ticket, evidences: draftEvidences.map((ev) => ({ ...ev, analysis_id: ev.analysis_id ?? String(ev.id) })) })
+  }
+
   async function analyze(idempotencyKey: string, onReplay?: () => void): Promise<AiCandidatesResponseOut> {
     analyzeInProgress.value = true
     visionFallback.value = null
@@ -175,6 +197,7 @@ export const useInspectionStore = defineStore('inspection', () => {
           files: files.value,
           lighting_point_id: lightingPointId.value ?? undefined,
           region_id: regionId.value ?? undefined,
+          facility_asset_id: facilityAssetId.value ?? undefined,
           scene_lighting_hint: sceneLightingHint.value,
         },
         idempotencyKey,
@@ -212,21 +235,15 @@ export const useInspectionStore = defineStore('inspection', () => {
   }
 
   function decideCandidate(
-    analysisId: string,
+    evidenceId: number,
     candidateId: string,
     decision: CandidateDecision,
     editedFaultType?: FaultType,
     editedNote?: string,
   ): void {
-    const key = `${analysisId}:${candidateId}`
-    decisions.value[key] = {
-      decision,
-      editedFaultType,
-      editedNote,
-    }
-    if (decision === 'modified' && editedFaultType) {
-      faultType.value = editedFaultType
-    }
+    const key = `${evidenceId}:${candidateId}`
+    decisions.value[key] = { decision, editedFaultType, editedNote }
+    selectedMainFaultType.value = null
   }
 
   async function submitConfirmedOrManual(
@@ -234,10 +251,22 @@ export const useInspectionStore = defineStore('inspection', () => {
     onReplay?: () => void,
   ): Promise<FaultTicketOut> {
     if (draftTicket.value && !manualMode.value) {
+      if (!allFaultCandidatesDisposed.value || !selectedMainFaultType.value || !retainedFaultTypes.value.includes(selectedMainFaultType.value)) {
+        throw new Error('CANDIDATE_DECISIONS_INCOMPLETE')
+      }
+      const candidateDecisions = flattenedCandidates.value.filter((item) => item.candidate.is_fault_candidate || item.decision !== 'pending').map((item) => {
+        if (item.decision === 'pending') throw new Error('CANDIDATE_DECISIONS_INCOMPLETE')
+        if (item.decision === 'modified') {
+          if (!item.editedFaultType) throw new Error('CANDIDATE_DECISIONS_INCOMPLETE')
+          return { evidence_id: item.evidenceId, candidate_id: item.candidate.candidate_id, decision: item.decision, fault_type: item.editedFaultType, manual_note: item.editedNote }
+        }
+        return { evidence_id: item.evidenceId, candidate_id: item.candidate.candidate_id, decision: item.decision }
+      })
       return confirmTicketApi(
         draftTicket.value.id,
         {
-          fault_type: faultType.value,
+          candidate_decisions: candidateDecisions,
+          fault_type: selectedMainFaultType.value,
           safety_flag: safetyFlag.value,
           manual_note: manualNote.value.trim() || undefined,
           title: title.value.trim() || undefined,
@@ -262,6 +291,19 @@ export const useInspectionStore = defineStore('inspection', () => {
       manual_note: manualNote.value.trim() || undefined,
     }
 
+    if (hasAnalyzed.value && !draftTicket.value && evidences.value.length > 0) {
+      const candidateDecisions = referenceCandidates.value
+        .filter((item) => item.decision === 'modified' || item.decision === 'rejected')
+        .map((item) => {
+          if (item.decision === 'modified') {
+            if (!item.editedFaultType) throw new Error('CANDIDATE_DECISIONS_INCOMPLETE')
+            return { evidence_id: item.evidenceId, candidate_id: item.candidate.candidate_id, decision: 'modified' as const, fault_type: item.editedFaultType, manual_note: item.editedNote }
+          }
+          return { evidence_id: item.evidenceId, candidate_id: item.candidate.candidate_id, decision: 'rejected' as const }
+        })
+      return createManualTicketJsonApi({ ...basePayload, evidence_ids: evidences.value.map((ev) => ev.id), candidate_decisions: candidateDecisions }, idempotencyKey, onReplay)
+    }
+
     if (files.value.length > 0) {
       return createManualTicketMultipartApi(
         { ...basePayload, files: files.value },
@@ -278,11 +320,23 @@ export const useInspectionStore = defineStore('inspection', () => {
     )
   }
 
+  // 草稿与候选绑定分析时的点位：更换点位必须显式作废分析产物
+  // （保留已选图片与填报内容，便于直接重新分析或转人工报障）。
+  function discardAnalysis(): void {
+    evidences.value = []
+    draftTicket.value = null
+    decisions.value = {}
+    selectedMainFaultType.value = null
+    hasAnalyzed.value = false
+    visionFallback.value = null
+  }
+
   function reset(): void {
     files.value = []
     evidences.value = []
     draftTicket.value = null
     decisions.value = {}
+    selectedMainFaultType.value = null
     manualMode.value = false
     faultType.value = 'LAMP_OUT'
     title.value = ''
@@ -306,6 +360,8 @@ export const useInspectionStore = defineStore('inspection', () => {
     decisions,
     manualMode,
     faultType,
+    selectedMainFaultType,
+    retainedFaultTypes,
     title,
     description,
     manualNote,
@@ -323,13 +379,16 @@ export const useInspectionStore = defineStore('inspection', () => {
     isAllReferenceOrEmpty,
     faultDisposedCount,
     allFaultCandidatesDisposed,
+    allFaultCandidatesRejected,
     setFiles,
     removeFile,
     clearPhotoError,
     setPhotoError,
     analyze,
+    resumeDraft,
     decideCandidate,
     submitConfirmedOrManual,
+    discardAnalysis,
     reset,
   }
 })

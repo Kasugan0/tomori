@@ -77,6 +77,10 @@ def _configure_test_env(test_db_url: str) -> None:
     os.environ["APP_ENV"] = "test"
     os.environ["TEST_DATABASE_URL"] = test_db_url
     os.environ["DATABASE_URL"] = test_db_url
+    # Demo seed is an env switch (settings.seed_demo, default off and always
+    # skipped under APP_ENV=production). Test env wants it on; setdefault keeps
+    # explicit overrides (e.g. production-skip probes) possible.
+    os.environ.setdefault("SEED_DEMO", "true")
     os.environ.setdefault(
         "JWT_SECRET_KEY", "tomori-stage2-isolated-test-jwt-secret-key-not-for-prod"
     )

@@ -58,6 +58,7 @@ from tomori.services.exceptions import (
     AppError,
 )
 from tomori.services.grading import get_active_rule
+from tomori.services.sla import compute_accept_deadline
 from tomori.services.state_machine import (
     build_audit_entry,
     create_dispatch_record,
@@ -199,6 +200,38 @@ async def _count_active_dispatches(session: AsyncSession, account_id: int) -> in
         )
     )
     return int(cnt or 0)
+
+
+def _accept_window_timedelta(policy: Mapping[str, Any] | None) -> timedelta:
+    """接单防死锁窗口：`sla_policy.response_minutes` 正整数优先，否则法定 48h。"""
+    if policy is not None:
+        minutes = policy.get("response_minutes")
+        if isinstance(minutes, int) and not isinstance(minutes, bool) and minutes > 0:
+            return timedelta(minutes=minutes)
+        hours = policy.get("statutory_deadline_hours")
+        if isinstance(hours, int) and not isinstance(hours, bool) and hours > 0:
+            return timedelta(hours=hours)
+    return timedelta(hours=48)
+
+
+async def _resolve_accept_deadline(
+    session: AsyncSession, ticket: FaultTicket, ts: datetime
+) -> datetime:
+    """派工接单防死锁时限 = 新派工时刻 + 既有接单窗口（上限为票 repair_deadline_at）。
+
+    `repair_deadline_at` 仍在未来时沿用 `sla.compute_accept_deadline` 语义
+    （`min(ts + response_minutes, repair_deadline)`，`response_minutes=null` 时即
+    `repair_deadline`）；已逾期或缺失时回退 `ts + 接单窗口`，不得沿用已过期时间，
+    否则派工即刻死锁（接单 422 → SLA 回收 → 再派工循环）。
+    """
+    loaded = await get_active_rule(session, "sla_policy")
+    policy = loaded[1] if loaded is not None else None
+    repair_deadline = ticket.repair_deadline_at
+    if repair_deadline is not None:
+        computed = compute_accept_deadline(ts, ensure_utc(repair_deadline), policy)
+        if computed > ts:
+            return computed
+    return ts + _accept_window_timedelta(policy)
 
 
 async def _compute_technician_on_time_rate(
@@ -353,11 +386,16 @@ async def _resolve_locked_dispatch_and_ticket(
     dispatch: DispatchRecord | None,
     ticket: FaultTicket | None,
 ) -> tuple[DispatchRecord, FaultTicket]:
+    """锁定派工与工单，统一锁序 ticket → dispatch（与 dispatch_ticket/reassign_ticket 一致）。
+
+    `ticket_id` 为不可变外键，dispatch 可先无锁读取再按序加锁；否则与
+    「先锁工单再锁派工」的路径形成锁序反转，存在跨事务死锁风险。
+    """
     if dispatch is None:
         if dispatch_id is None:
             raise ValueError("Either dispatch_id or dispatch must be provided")
         dispatch = await session.scalar(
-            select(DispatchRecord).where(DispatchRecord.id == dispatch_id).with_for_update()
+            select(DispatchRecord).where(DispatchRecord.id == dispatch_id)
         )
         if dispatch is None:
             raise AppError(
@@ -375,7 +413,16 @@ async def _resolve_locked_dispatch_and_ticket(
                 "关联故障工单不存在",
                 {"resource_type": "FAULT_TICKET", "resource_id": dispatch.ticket_id},
             )
-    return dispatch, ticket
+    locked_dispatch = await session.scalar(
+        select(DispatchRecord).where(DispatchRecord.id == dispatch.id).with_for_update()
+    )
+    if locked_dispatch is None:
+        raise AppError(
+            RESOURCE_NOT_FOUND,
+            "派工记录不存在",
+            {"resource_type": "DISPATCH", "resource_id": dispatch.id},
+        )
+    return locked_dispatch, ticket
 
 
 async def compute_dispatch_candidates(
@@ -592,7 +639,13 @@ async def verify_technician_eligible(
     """
     ts = ensure_utc(now)
 
-    account = await session.scalar(select(Account).where(Account.id == technician_account_id))
+    # FOR UPDATE：并发派工按维修员账号行锁串行化，防止两事务同时通过在途计数校验超上限
+    account = await session.scalar(
+        select(Account)
+        .where(Account.id == technician_account_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     if account is None:
         raise AppError(
             RESOURCE_NOT_FOUND,
@@ -626,62 +679,36 @@ async def verify_technician_eligible(
     provided = await session.scalar(
         select(ScopeAuthorization).where(ScopeAuthorization.id == scope_authorization_id)
     )
-    scope: ScopeAuthorization | None = None
+    # 调用方提交的授权 ID 必须精确匹配该维修员 + 本区 + REPAIR；
+    # 不存在/张冠李戴/错类型一律 422，禁止静默替换为其他有效授权（反静默失败）
     if (
-        provided is not None
-        and provided.account_id == technician_account_id
-        and provided.region_id == ticket.region_id
-        and provided.scope_type == "REPAIR"
+        provided is None
+        or provided.account_id != technician_account_id
+        or provided.region_id != ticket.region_id
+        or provided.scope_type != "REPAIR"
     ):
-        if not _is_scope_valid_at(provided, ts):
-            raise AppError(
-                DISPATCH_TECHNICIAN_NOT_ELIGIBLE,
-                "目标维修人员在该运维区域的维修授权已停用或已过期",
-                {
-                    "reason": "SCOPE_EXPIRED",
-                    "account_id": technician_account_id,
-                    "region_id": ticket.region_id,
-                    "scope_authorization_id": provided.id,
-                },
-            )
-        scope = provided
-    else:
-        pair_scopes = list(
-            (
-                await session.scalars(
-                    select(ScopeAuthorization)
-                    .where(
-                        ScopeAuthorization.account_id == technician_account_id,
-                        ScopeAuthorization.region_id == ticket.region_id,
-                        ScopeAuthorization.scope_type == "REPAIR",
-                    )
-                    .order_by(ScopeAuthorization.id.asc())
-                )
-            ).all()
+        raise AppError(
+            DISPATCH_TECHNICIAN_NOT_ELIGIBLE,
+            "提交的 scope_authorization_id 无效或与目标维修员/区域/授权类型不匹配",
+            {
+                "reason": "NO_REGION_SCOPE",
+                "account_id": technician_account_id,
+                "region_id": ticket.region_id,
+                "scope_authorization_id": scope_authorization_id,
+            },
         )
-        valid_pair = next((s for s in pair_scopes if _is_scope_valid_at(s, ts)), None)
-        if valid_pair is not None:
-            scope = valid_pair
-        elif pair_scopes:
-            raise AppError(
-                DISPATCH_TECHNICIAN_NOT_ELIGIBLE,
-                "目标维修人员在该运维区域的维修授权已停用或已过期",
-                {
-                    "reason": "SCOPE_EXPIRED",
-                    "account_id": technician_account_id,
-                    "region_id": ticket.region_id,
-                },
-            )
-        else:
-            raise AppError(
-                DISPATCH_TECHNICIAN_NOT_ELIGIBLE,
-                "目标维修人员未获此运维区域的维修授权",
-                {
-                    "reason": "NO_REGION_SCOPE",
-                    "account_id": technician_account_id,
-                    "region_id": ticket.region_id,
-                },
-            )
+    if not _is_scope_valid_at(provided, ts):
+        raise AppError(
+            DISPATCH_TECHNICIAN_NOT_ELIGIBLE,
+            "目标维修人员在该运维区域的维修授权已停用或已过期",
+            {
+                "reason": "SCOPE_EXPIRED",
+                "account_id": technician_account_id,
+                "region_id": ticket.region_id,
+                "scope_authorization_id": provided.id,
+            },
+        )
+    scope = provided
 
     active_count = await _count_active_dispatches(session, technician_account_id)
     if active_count >= account.max_active_dispatch:
@@ -769,23 +796,26 @@ async def dispatch_ticket(
         extra={"remark": payload.remark} if payload.remark is not None else None,
     )
 
-    rework_order_id: int | None = None
-    if target_ticket.status == "REWORK_PENDING_DISPATCH":
-        rework = await session.scalar(
-            select(ReworkOrder)
-            .where(
-                ReworkOrder.ticket_id == target_ticket.id,
-                ReworkOrder.status == "PENDING_DISPATCH",
-                ReworkOrder.requires_manual_review.is_(False),
-            )
-            .with_for_update()
+    # 关联返修单以「票下存在 PENDING_DISPATCH 活跃返修单」为准：
+    # REWORK_PENDING_DISPATCH 票态必有关联，返修派工被拒/超时回收后票态回退
+    # PENDING_DISPATCH 但返修单仍待派，此处重新关联修复返修断链
+    rework = await session.scalar(
+        select(ReworkOrder)
+        .where(
+            ReworkOrder.ticket_id == target_ticket.id,
+            ReworkOrder.status == "PENDING_DISPATCH",
+            ReworkOrder.requires_manual_review.is_(False),
         )
-        if rework is None:
-            raise AppError(
-                INVALID_STATE_TRANSITION,
-                "返修待派工单缺少可用的活跃返修单",
-                {"entity": "rework_orders", "ticket_id": target_ticket.id},
-            )
+        .with_for_update()
+    )
+    if target_ticket.status == "REWORK_PENDING_DISPATCH" and rework is None:
+        raise AppError(
+            INVALID_STATE_TRANSITION,
+            "返修待派工单缺少可用的活跃返修单",
+            {"entity": "rework_orders", "ticket_id": target_ticket.id},
+        )
+    rework_order_id: int | None = None
+    if rework is not None:
         rework_order_id = rework.id
         await transition_rework(
             session,
@@ -797,7 +827,7 @@ async def dispatch_ticket(
             persist_audit=False,
         )
 
-    accept_deadline_at = target_ticket.repair_deadline_at or (ts + timedelta(hours=48))
+    accept_deadline_at = await _resolve_accept_deadline(session, target_ticket, ts)
     try:
         dispatch = await create_dispatch_record(
             session,
@@ -924,7 +954,7 @@ async def reassign_ticket(
         },
     )
 
-    accept_deadline_at = target_ticket.repair_deadline_at or (ts + timedelta(hours=48))
+    accept_deadline_at = await _resolve_accept_deadline(session, target_ticket, ts)
     new_dispatch = await create_dispatch_record(
         session,
         ticket=target_ticket,
@@ -1167,6 +1197,25 @@ async def reject_dispatch(
     target_ticket.dispatch_reject_count += 1
     exceeded = target_ticket.dispatch_reject_count >= _DISPATCH_REJECT_ESCALATION_THRESHOLD
 
+    # 返修派工被拒：关联返修单同步回退，避免工单/返修单状态断链
+    # （未超阈值 → PENDING_DISPATCH 可再派；超阈值票进 MANUAL_REVIEW → IN_MANUAL_REVIEW）
+    if target_dispatch.rework_order_id is not None:
+        linked_rework = await session.scalar(
+            select(ReworkOrder)
+            .where(ReworkOrder.id == target_dispatch.rework_order_id)
+            .with_for_update()
+        )
+        if linked_rework is not None and linked_rework.status == "DISPATCHED":
+            await transition_rework(
+                session,
+                linked_rework,
+                to_status="IN_MANUAL_REVIEW" if exceeded else "PENDING_DISPATCH",
+                actor_account_id=actor.id,
+                action="DISPATCH_REJECTED",
+                now=ts,
+                persist_audit=False,
+            )
+
     region_admin_ids = await list_region_admin_ids(session, target_ticket.region_id)
     notify_list: list[tuple[str, list[int]]] = [("DISPATCH_REJECTED", region_admin_ids)]
     if exceeded:
@@ -1263,6 +1312,26 @@ async def escalate_dispatch(
     )
     # 满足 ck_dispatch_records_accepted_at_required：仅 ACCEPTED/COMPLETED 允许 accepted_at 非空
     target_dispatch.accepted_at = None
+
+    # 升级进人工复核：关联返修单同步 IN_REPAIR → IN_MANUAL_REVIEW，
+    # 使 review-resolve 三出口可将其收进终态，避免返修遗留 IN_REPAIR 断链
+    if target_dispatch.rework_order_id is not None:
+        linked_rework = await session.scalar(
+            select(ReworkOrder)
+            .where(ReworkOrder.id == target_dispatch.rework_order_id)
+            .with_for_update()
+        )
+        if linked_rework is not None and linked_rework.status == "IN_REPAIR":
+            await transition_rework(
+                session,
+                linked_rework,
+                to_status="IN_MANUAL_REVIEW",
+                actor_account_id=actor.id,
+                action="DISPATCH_ESCALATED",
+                note=resolved_reason,
+                now=ts,
+                persist_audit=False,
+            )
 
     all_admin_ids = await list_all_active_admin_ids(session)
     await transition_ticket(

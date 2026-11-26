@@ -9,11 +9,35 @@ All anchors are frozen `data-testid`s. The `router.beforeEach` guard in
 from __future__ import annotations
 
 import re
+from typing import Any
 
 import pytest
 from playwright.sync_api import Page
 
-from tests.e2e.conftest import api_get, api_login, api_post, login, logout
+from tests.e2e.conftest import (
+    _localhost_client,
+    api_get,
+    api_login,
+    api_post,
+    create_lighting_point,
+    login,
+    logout,
+)
+
+
+def _post_idem(backend_url: str, token: str, path: str, json_body: dict[str, Any]) -> Any:
+    """Authenticated POST with a fresh Idempotency-Key (production contract)."""
+    import uuid
+
+    with _localhost_client() as client:
+        return client.post(
+            f"{backend_url}{path}",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Idempotency-Key": f"e2e-{uuid.uuid4().hex[:32]}",
+            },
+            json=json_body,
+        )
 
 
 def test_inspector_cannot_reach_admin_routes_and_sees_no_admin_nav(
@@ -104,12 +128,48 @@ def test_technician_sees_only_repair_workbench_no_dispatch_board(
 
     own_dispatch_response = api_get(backend_server, token, "/api/v1/dispatches?page_size=5")
     assert own_dispatch_response.status_code == 200
+    me = api_get(backend_server, token, "/api/v1/auth/me")
+    assert me.status_code == 200
+    my_account_id = int(me.json()["account"]["id"])
     own_items = own_dispatch_response.json()["items"]
-    assert all(
-        item["technician_account_id"]
-        == own_dispatch_response.json()["items"][0]["technician_account_id"]
-        for item in own_items
-    ), "维修员只能看到自己的派工单"
+    if not own_items:
+        # Baseline has no dispatch for tech1 yet — create one via production path
+        # to make the ownership assertion meaningful (real business side effect).
+        admin_token = api_login(backend_server, "admin")
+        insp_token = api_login(backend_server, "inspector1")
+        pt_id = create_lighting_point(backend_server, admin_token, point_code="SL-E2E-ISO-001")
+        r_ticket = _post_idem(
+            backend_server,
+            insp_token,
+            "/api/v1/tickets",
+            {
+                "lighting_point_id": pt_id,
+                "fault_type": "LAMP_OUT",
+                "title": "E2E 角色隔离工单",
+                "safety_flag": False,
+            },
+        )
+        assert r_ticket.status_code == 201, r_ticket.text
+        tid = int(r_ticket.json()["id"])
+        cands = api_get(backend_server, admin_token, f"/api/v1/tickets/{tid}/dispatch-candidates")
+        cand = next(c for c in cands.json()["candidates"] if c["username"] == "tech1")
+        r_disp = _post_idem(
+            backend_server,
+            admin_token,
+            f"/api/v1/tickets/{tid}/dispatch",
+            {
+                "technician_account_id": cand["account_id"],
+                "scope_authorization_id": cand["scope_authorization_id"],
+            },
+        )
+        assert r_disp.status_code == 201, r_disp.text
+        # Re-query own dispatches after creating the real one
+        own_dispatch_response = api_get(backend_server, token, "/api/v1/dispatches?page_size=5")
+        own_items = own_dispatch_response.json()["items"]
+        assert own_items, "生产路径建单派工后 tech1 必须有可见派工"
+    assert all(item["technician_account_id"] == my_account_id for item in own_items), (
+        "维修员只能看到自己的派工单"
+    )
 
 
 def test_admin_sees_every_nav_entry_and_other_role_pages(

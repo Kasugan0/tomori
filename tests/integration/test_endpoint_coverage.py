@@ -18,7 +18,11 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
-from tests.integration.conftest import auth_headers_for, new_idem_key
+from tests.integration.conftest import (
+    auth_headers_for,
+    build_confirm_payload,
+    new_idem_key,
+)
 
 
 def _err(resp: Any) -> dict[str, Any]:
@@ -399,7 +403,7 @@ async def test_patch_ticket_draft_fields_404_422_and_facility_asset_validation(
     # 422 INVALID_STATE_TRANSITION: confirm first, then PATCH -> must reject non-draft state
     r_confirm = await api_client.post(
         f"/api/v1/tickets/{draft['id']}/confirm",
-        json={"safety_flag": False},
+        json=build_confirm_payload(r_ai.json()["evidences"]),
         headers={**insp_hdr, "Idempotency-Key": new_idem_key("p01-conf")},
     )
     assert r_confirm.status_code == 200, r_confirm.text

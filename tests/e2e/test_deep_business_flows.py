@@ -676,11 +676,27 @@ def test_repair_complete_missing_safety_items_gated_in_ui(
 def test_health_structure_and_admin_notifications_visibility_smoke(
     page: Page, frontend_url: str, backend_server: str
 ) -> None:
-    """补充冒烟：admin 通知中心可见既有通知行（mine tab 存在且列表结构正常）。"""
-    _ = backend_server
+    """admin 通知中心可见真实通知行（业务事件产生，非仅结构容器）。"""
+    admin_token = api_login(backend_server, "admin")
+    insp_token = api_login(backend_server, "inspector1")
+    pt_id = create_lighting_point(backend_server, admin_token, point_code="SL-E2E-NOTIF-001")
+    # 真实业务副作用：人工建单 -> TICKET_CONFIRMED 通知本区域 ADMIN
+    r_ticket = _api_post_idem(
+        backend_server,
+        insp_token,
+        "/api/v1/tickets",
+        json_body={
+            "lighting_point_id": pt_id,
+            "fault_type": "LAMP_OUT",
+            "title": "E2E 通知可见性工单",
+            "safety_flag": False,
+        },
+    )
+    assert r_ticket.status_code == 201, r_ticket.text
     login(page, frontend_url, "admin")
     page.goto(f"{frontend_url}/notifications", wait_until="networkidle")
     # 我的通知 tab 默认激活，死信队列按钮存在（ADMIN 专属）
     assert page.get_by_role("button", name=re.compile(r"死信队列")).count() == 1
     rows = page.locator('[data-testid^="notification-row-"]')
-    assert rows.count() >= 0  # 结构性断言：列表容器存在
+    rows.first.wait_for(state="visible", timeout=10_000)
+    assert rows.count() >= 1

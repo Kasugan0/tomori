@@ -36,6 +36,7 @@ export interface CreateManualTicketJsonPayload {
   safety_flag?: boolean
   manual_note?: string | null
   evidence_ids?: number[]
+  candidate_decisions?: CandidateDecisionPayload[]
 }
 
 export interface UpdateTicketDraftPayload {
@@ -46,8 +47,17 @@ export interface UpdateTicketDraftPayload {
   manual_note?: string | null
 }
 
-export interface ConfirmTicketPayload {
+export interface CandidateDecisionPayload {
+  evidence_id: number
+  candidate_id: string
+  decision: 'confirmed' | 'modified' | 'rejected'
   fault_type?: FaultType
+  manual_note?: string
+}
+
+export interface ConfirmTicketPayload {
+  candidate_decisions: CandidateDecisionPayload[]
+  fault_type: FaultType
   priority_override?: PriorityCode | null
   safety_flag?: boolean
   manual_note?: string | null
@@ -60,6 +70,7 @@ export async function analyzeAiCandidatesApi(
     files: File[]
     lighting_point_id?: number
     region_id?: number
+    facility_asset_id?: number
     scene_lighting_hint?: SceneLightingHint
   },
   idempotencyKey: string,
@@ -74,6 +85,9 @@ export async function analyzeAiCandidatesApi(
   }
   if (params.region_id !== undefined) {
     form.append('region_id', String(params.region_id))
+  }
+  if (params.facility_asset_id !== undefined) {
+    form.append('facility_asset_id', String(params.facility_asset_id))
   }
   form.append('scene_lighting_hint', params.scene_lighting_hint ?? 'auto')
 

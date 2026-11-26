@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -135,9 +135,13 @@ async def get_authorized_region_ids(
     account_id: int,
     *,
     scope_type: str | None = None,
+    scope_types: Collection[str] | None = None,
     at: datetime | None = None,
 ) -> set[int]:
-    """查询操作人当前有效授权的全部 region_id 集合。"""
+    """查询操作人当前有效授权的全部 region_id 集合。
+
+    `scope_type` 单类型精确匹配；`scope_types` 多类型任一命中（如 `{"INSPECT","MANAGE"}`）。
+    """
     now = at or datetime.now(UTC)
     stmt = select(ScopeAuthorization.region_id).where(
         ScopeAuthorization.account_id == account_id,
@@ -147,6 +151,8 @@ async def get_authorized_region_ids(
     )
     if scope_type is not None:
         stmt = stmt.where(ScopeAuthorization.scope_type == scope_type)
+    if scope_types is not None:
+        stmt = stmt.where(ScopeAuthorization.scope_type.in_(tuple(scope_types)))
     ids = (await session.scalars(stmt)).all()
     return set(ids)
 

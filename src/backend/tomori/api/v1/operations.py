@@ -38,7 +38,12 @@ from tomori.schemas.operations import (
 )
 from tomori.schemas.ticket import FaultTicketOut
 from tomori.services.auth import get_authorized_region_ids
-from tomori.services.exceptions import FORBIDDEN_ROLE, RESOURCE_NOT_FOUND, AppError
+from tomori.services.exceptions import (
+    FORBIDDEN_ROLE,
+    INVALID_STATE_TRANSITION,
+    RESOURCE_NOT_FOUND,
+    AppError,
+)
 from tomori.services.rework import review_resolve_ticket, submit_acceptance
 from tomori.services.sla import run_sla_scan
 from tomori.services.state_machine import transition_notification
@@ -143,7 +148,10 @@ async def list_acceptances(
 ) -> PaginatedResponse[AcceptanceRecordOut]:
     stmt = select(AcceptanceRecord).join(FaultTicket, FaultTicket.id == AcceptanceRecord.ticket_id)
     if principal.role_code != "ADMIN":
-        allowed = await get_authorized_region_ids(session, principal.account.id)
+        # 验收记录属巡查域：须持该区域 INSPECT 或 MANAGE 有效授权
+        allowed = await get_authorized_region_ids(
+            session, principal.account.id, scope_types={"INSPECT", "MANAGE"}
+        )
         if not allowed:
             return PaginatedResponse[AcceptanceRecordOut](
                 items=[], total=0, page=page, page_size=page_size
@@ -187,7 +195,13 @@ async def list_rework_orders(
 ) -> PaginatedResponse[ReworkOrderOut]:
     stmt = select(ReworkOrder)
     if principal.role_code != "ADMIN":
-        allowed = await get_authorized_region_ids(session, principal.account.id)
+        # 返修单跨巡查/维修两域：按角色映射类型 + MANAGE 兜底
+        required_types = (
+            {"INSPECT", "MANAGE"} if principal.role_code == "INSPECTOR" else {"REPAIR", "MANAGE"}
+        )
+        allowed = await get_authorized_region_ids(
+            session, principal.account.id, scope_types=required_types
+        )
         if not allowed:
             return PaginatedResponse[ReworkOrderOut](
                 items=[], total=0, page=page, page_size=page_size
@@ -234,14 +248,18 @@ async def get_rework_order(
             {"resource_type": "REWORK", "resource_id": rework_order_id},
         )
     if principal.role_code != "ADMIN":
-        allowed = await get_authorized_region_ids(session, principal.account.id)
+        # 类型守卫不可被任意类型授权绕过：须持本区角色对应类型或 MANAGE
+        required = "INSPECT" if principal.role_code == "INSPECTOR" else "REPAIR"
+        allowed = await get_authorized_region_ids(
+            session, principal.account.id, scope_types={required, "MANAGE"}
+        )
         if rework.region_id not in allowed:
             await ensure_region_scope(
                 session,
                 ctx=ctx,
                 principal=principal,
                 region_id=rework.region_id,
-                scope_type="INSPECT" if principal.role_code == "INSPECTOR" else "REPAIR",
+                scope_type=required,
                 resource_type="REWORK",
                 resource_id=rework.id,
                 ticket_id=rework.ticket_id,
@@ -428,6 +446,18 @@ async def retry_dead_letter_notification(
             RESOURCE_NOT_FOUND,
             "通知任务不存在",
             {"resource_type": "NOTIFICATION", "resource_id": notification_id},
+        )
+    # HTTP 契约仅允许 DEAD_LETTER->PENDING；PROCESSING->PENDING 归 worker 自愈、
+    # FAILED->PENDING 归自动重试，均不经此端点（D7）。
+    if task.status != "DEAD_LETTER":
+        raise AppError(
+            INVALID_STATE_TRANSITION,
+            f"仅 DEAD_LETTER 通知任务可重试，当前为 {task.status}",
+            {
+                "entity": "notification_tasks",
+                "from_status": task.status,
+                "to_status": "PENDING",
+            },
         )
     await transition_notification(
         session,

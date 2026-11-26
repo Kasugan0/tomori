@@ -13,12 +13,13 @@ from typing import cast
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.exc import SQLAlchemyError
+from starlette.exceptions import HTTPException
 
 from tomori.api.errors import register_exception_handlers
 from tomori.api.v1 import api_router
 from tomori.services.auth import seed_demo_data
-from tomori.services.exceptions import AppError
-from tomori.settings import get_settings
+from tomori.services.exceptions import IMAGE_SIZE_EXCEEDED, AppError
+from tomori.settings import MAX_FILES_PER_REQUEST, get_settings
 from tomori.workers.notifier import notifier_loop
 from tomori.workers.sla_scanner import sla_scanner_loop
 
@@ -69,6 +70,43 @@ class RequestIdMiddleware:
         await self.app(scope, receive, _send)
 
 
+class RequestBodyLimitError(AppError, HTTPException):
+    pass
+
+
+class RequestBodyLimitMiddleware:
+    def __init__(self, app: Callable[..., Awaitable[None]], max_bytes: int) -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(
+        self,
+        scope: dict[str, object],
+        receive: Callable[..., Awaitable[dict[str, object]]],
+        send: Callable[..., Awaitable[None]],
+    ) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        size = 0
+
+        async def limited_receive() -> dict[str, object]:
+            nonlocal size
+            message = await receive()
+            if message.get("type") == "http.request":
+                body = cast(bytes, message.get("body", b""))
+                size += len(body)
+                if size > self.max_bytes:
+                    raise RequestBodyLimitError(
+                        IMAGE_SIZE_EXCEEDED,
+                        "请求体大小超过单次上传总量上限",
+                        {"max_bytes": self.max_bytes},
+                    )
+            return message
+
+        await self.app(scope, limited_receive, send)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
@@ -77,13 +115,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     from tomori.db.session import get_async_sessionmaker
 
-    session_factory = get_async_sessionmaker()
-    try:
-        async with session_factory() as session:
-            await seed_demo_data(session)
-            await session.commit()
-    except (SQLAlchemyError, AppError):
-        logger.exception("Demo data seeding skipped (database unavailable or already seeded)")
+    if settings.seed_demo and settings.app_env == "production":
+        logger.error("Demo data seeding is disabled in production")
+    elif settings.seed_demo:
+        session_factory = get_async_sessionmaker()
+        try:
+            async with session_factory() as session:
+                await seed_demo_data(session)
+                await session.commit()
+        except (SQLAlchemyError, AppError):
+            logger.exception("Demo data seeding skipped (database unavailable or already seeded)")
 
     if settings.app_env != "test":
         tasks.append(asyncio.create_task(sla_scanner_loop(stop_event), name="sla-scanner"))
@@ -113,6 +154,10 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    app.add_middleware(
+        RequestBodyLimitMiddleware,
+        max_bytes=settings.max_upload_size_bytes * MAX_FILES_PER_REQUEST + 1024 * 1024,
+    )
     app.add_middleware(RequestIdMiddleware)
     app.add_middleware(
         CORSMiddleware,

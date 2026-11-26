@@ -18,8 +18,12 @@ from tests.integration.conftest import auth_headers_for
 from tomori.models.account import Account
 from tomori.models.audit_log import AuditLog
 from tomori.models.notification_task import NotificationTask
-from tomori.services.state_machine import create_notification_task
-from tomori.workers.notifier import process_due_notifications_once
+from tomori.services.state_machine import create_notification_task, transition_notification
+from tomori.workers.notifier import (
+    WORKER_PROCESSING_TIMEOUT_ERROR,
+    process_due_notifications_once,
+    recover_stuck_processing_tasks,
+)
 
 
 def _err(resp: Any) -> dict[str, Any]:
@@ -197,17 +201,51 @@ async def test_retry_on_non_dead_letter_returns_422_and_illegal_transitions(
             title="P0-2 非法重试源",
             body="未死信不可重试",
         )
+        processing = create_notification_task(
+            s,
+            recipient_account_id=inspector.id,
+            event_type="AI_CANDIDATE_CREATED",
+            channel="IN_APP",
+            title="P0-2 卡死自愈源",
+            body="PROCESSING 滞留应由 worker 回收",
+        )
         await s.flush()
         pending_id = pending.id
+        processing_id = processing.id
+        # Drive the second task to real PROCESSING through the state machine.
+        await transition_notification(s, processing, "PROCESSING", now=t0)
 
     # PENDING -> retry must be 422 INVALID_STATE_TRANSITION (D7 only allows DEAD_LETTER)
     r_bad = await api_client.post(f"/api/v1/notifications/{pending_id}/retry", headers=admin_hdr)
     assert r_bad.status_code == 422
     assert _err(r_bad)["code"] == "INVALID_STATE_TRANSITION"
 
+    # PROCESSING -> retry must also be 422 INVALID_STATE_TRANSITION
+    r_processing = await api_client.post(
+        f"/api/v1/notifications/{processing_id}/retry", headers=admin_hdr
+    )
+    assert r_processing.status_code == 422
+    assert _err(r_processing)["code"] == "INVALID_STATE_TRANSITION"
+
+    # PROCESSING 卡死超 10 分钟后被 worker 自愈回 PENDING（attempt_count+1、last_error 留痕）
+    stale_at = t0 + timedelta(minutes=11)
+    async with AsyncSession(async_engine, expire_on_commit=False) as s:
+        stuck = await s.scalar(select(NotificationTask).where(NotificationTask.id == processing_id))
+        assert stuck is not None
+        stuck.updated_at = t0 - timedelta(minutes=11)
+        recovered = await recover_stuck_processing_tasks(s, now=stale_at)
+        assert recovered == 1
+        await s.commit()
+    async with AsyncSession(async_engine, expire_on_commit=False) as s:
+        row = await s.scalar(select(NotificationTask).where(NotificationTask.id == processing_id))
+        assert row is not None
+        assert row.status == "PENDING"
+        assert row.attempt_count == 1
+        assert row.last_error == WORKER_PROCESSING_TIMEOUT_ERROR
+
     # Deliver pending via worker to reach SENT, then retry must also be 422
     async with AsyncSession(async_engine, expire_on_commit=False) as s:
-        await process_due_notifications_once(s, dispatcher=lambda _t: True, now=t0)
+        await process_due_notifications_once(s, dispatcher=lambda _t: True, now=stale_at)
     r_sent = await api_client.post(f"/api/v1/notifications/{pending_id}/retry", headers=admin_hdr)
     assert r_sent.status_code == 422
     assert _err(r_sent)["code"] == "INVALID_STATE_TRANSITION"

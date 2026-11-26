@@ -27,6 +27,9 @@ class Settings(BaseSettings):
 
     # ── Runtime ──
     app_env: str = "development"
+    # 演示种子开关（SEED_DEMO）：仅演示/测试环境显式开启，
+    # 生产缺省关闭以避免启动时创建固定凭据账号
+    seed_demo: bool = False
     tz: str = "Asia/Shanghai"
 
     # ── PostgreSQL & psycopg v3 ──

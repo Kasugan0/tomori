@@ -3,6 +3,7 @@ import { computed, nextTick, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
 import { dispatchTicketApi, getDispatchCandidatesApi } from '@/api/dispatches'
+import type { ReviewResolvePayload } from '@/api/operations'
 import { uploadTicketEvidencesApi } from '@/api/tickets'
 import AuthImage from '@/components/AuthImage.vue'
 import PriorityTag from '@/components/PriorityTag.vue'
@@ -43,6 +44,7 @@ import { validateStaticImageFiles } from '@/shared/upload'
 import { useAuthStore } from '@/stores/auth'
 import { useErrorBannerStore } from '@/stores/errorBanner'
 import { useTicketsStore } from '@/stores/tickets'
+import { useInspectionStore } from '@/stores/inspection'
 
 const route = useRoute()
 const router = useRouter()
@@ -115,13 +117,6 @@ const draftRequiresManualNote = computed(() =>
   MANUAL_NOTE_REQUIRED_FAULT_TYPES.includes(draftFaultType.value),
 )
 
-const canSubmitDraftConfirm = computed(() => {
-  if (!canConfirmDraft.value) return false
-  if (confirmSubmit.isSubmitting.value || draftSaving.value) return false
-  if (draftTitle.value.trim().length === 0) return false
-  if (draftRequiresManualNote.value && draftManualNote.value.trim().length === 0) return false
-  return true
-})
 
 // 撤销误报
 const cancelSubmit = useIdempotentSubmit()
@@ -156,21 +151,106 @@ const resolveResolution = ref<ReviewResolution | null>(null)
 const resolveReason = ref('')
 const resolveReasonInputRef = ref<HTMLTextAreaElement | null>(null)
 
+// SPECIAL_CLOSE 督促留证（契约：urged_at 带时区 ISO、urged_unit ≤128、urge_evidence_ids ≥1）
+const resolveUrgedAt = ref('')
+const resolveUrgedUnit = ref('')
+const pendingUrgeFiles = ref<File[]>([])
+const uploadedUrgeEvidenceIds = ref<number[]>([])
+const urgeEvidenceError = ref<string | null>(null)
+const urgeEvidenceUploading = ref(false)
+const urgeFileInputRef = ref<HTMLInputElement | null>(null)
+
 const resolutionOptions: ReadonlyArray<{ value: ReviewResolution; label: string }> = [
   { value: 'APPROVE_REASSIGN', label: REVIEW_RESOLUTION_LABELS.APPROVE_REASSIGN },
   { value: 'SPECIAL_CLOSE', label: REVIEW_RESOLUTION_LABELS.SPECIAL_CLOSE },
   { value: 'TERMINATE_CANCEL', label: REVIEW_RESOLUTION_LABELS.TERMINATE_CANCEL },
 ]
 
+const isSpecialClose = computed(() => resolveResolution.value === 'SPECIAL_CLOSE')
+
 const canSubmitResolve = computed(() => {
   if (!canReviewResolve.value) return false
-  if (resolveSubmit.isSubmitting.value) return false
+  if (resolveSubmit.isSubmitting.value || urgeEvidenceUploading.value) return false
   if (resolveResolution.value === null) return false
   const trimmed = resolveReason.value.trim()
   if (trimmed.length === 0) return false
-  if (resolveResolution.value === 'SPECIAL_CLOSE' && trimmed.length < 10) return false
+  if (isSpecialClose.value) {
+    if (trimmed.length < 10) return false
+    const urgedAtMs = new Date(resolveUrgedAt.value).getTime()
+    if (!resolveUrgedAt.value || Number.isNaN(urgedAtMs)) return false
+    if (resolveUrgedUnit.value.trim().length === 0) return false
+    if (uploadedUrgeEvidenceIds.value.length + pendingUrgeFiles.value.length === 0) return false
+  }
   return true
 })
+
+// 互斥纪律（与后端一致）：非 SPECIAL_CLOSE 时三字段必须缺省，切换即清空防残留提交
+watch(resolveResolution, (val) => {
+  if (val !== 'SPECIAL_CLOSE') {
+    clearUrgeFields()
+  }
+})
+
+function clearUrgeFields(): void {
+  resolveUrgedAt.value = ''
+  resolveUrgedUnit.value = ''
+  pendingUrgeFiles.value = []
+  uploadedUrgeEvidenceIds.value = []
+  urgeEvidenceError.value = null
+  if (urgeFileInputRef.value) {
+    urgeFileInputRef.value.value = ''
+  }
+}
+
+async function onUrgeFilesChange(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement | null
+  const files = input?.files ? Array.from(input.files) : []
+  urgeEvidenceError.value = null
+  if (files.length === 0) return
+
+  const combined = [...pendingUrgeFiles.value, ...files]
+  const validation = await validateStaticImageFiles(combined)
+  if (!validation.valid) {
+    urgeEvidenceError.value = validation.message || '图片校验未通过'
+    if (input) input.value = ''
+    return
+  }
+
+  pendingUrgeFiles.value = combined
+  if (input) input.value = ''
+}
+
+function removePendingUrgeFile(idx: number): void {
+  pendingUrgeFiles.value = pendingUrgeFiles.value.filter((_, i) => i !== idx)
+  urgeEvidenceError.value = null
+}
+
+async function uploadPendingUrgeEvidences(): Promise<number[]> {
+  const t = ticket.value
+  if (!t || pendingUrgeFiles.value.length === 0) return []
+  const validation = await validateStaticImageFiles(pendingUrgeFiles.value)
+  if (!validation.valid) {
+    urgeEvidenceError.value = validation.message || '图片校验未通过'
+    throw new Error(validation.code || 'VALIDATION_ERROR')
+  }
+  urgeEvidenceUploading.value = true
+  try {
+    const uploaded = await uploadTicketEvidencesApi(
+      t.id,
+      pendingUrgeFiles.value,
+      'ACCEPTANCE_PHOTO',
+    )
+    const ids = uploaded.map((ev) => ev.id)
+    uploadedUrgeEvidenceIds.value = [...uploadedUrgeEvidenceIds.value, ...ids]
+    pendingUrgeFiles.value = []
+    if (urgeFileInputRef.value) {
+      urgeFileInputRef.value.value = ''
+    }
+    return ids
+  } finally {
+    urgeEvidenceUploading.value = false
+  }
+}
 
 // 验收 & 返修
 const acceptSubmit = useIdempotentSubmit()
@@ -305,7 +385,7 @@ watch([regradePriority, regradeReason], () => {
 watch([reassignCandidateId, reassignReason, reassignEscalate], () => {
   if (!reassignSubmit.isSubmitting.value) reassignSubmit.resetKey()
 })
-watch([resolveResolution, resolveReason], () => {
+watch([resolveResolution, resolveReason, resolveUrgedAt, resolveUrgedUnit, uploadedUrgeEvidenceIds], () => {
   if (!resolveSubmit.isSubmitting.value) resolveSubmit.resetKey()
 })
 watch([acceptDecision, acceptComment], () => {
@@ -346,37 +426,20 @@ async function handleSaveDraft(): Promise<void> {
 
 async function handleConfirmDraft(): Promise<void> {
   const t = ticket.value
-  if (!t || !canSubmitDraftConfirm.value) return
-  const ok = await confirmDialog(
-    '确认后将按业务规则完成分级，并自确认时刻起算 48 小时法定修复期限，是否确认转入待派工？',
-    '确认 AI 候选工单',
-    '确认提交',
-  )
-  if (!ok) return
-
-  bannerStore.clear()
-  actionSuccessMessage.value = null
-  try {
-    const detail = await confirmSubmit.run((key, onReplay) =>
-      ticketsStore.confirm(
-        t.id,
-        {
-          title: draftTitle.value.trim(),
-          fault_type: draftFaultType.value,
-          description: draftDescription.value.trim() || null,
-          safety_flag: draftSafetyFlag.value,
-          manual_note: draftManualNote.value.trim() || null,
-          priority_override: draftPriorityOverride.value || null,
-        },
-        key,
-        onReplay,
-      ),
-    )
-    syncDraftFromTicket(detail)
-    actionSuccessMessage.value = '已确认工单并进入待派工（PENDING_DISPATCH）'
-  } catch (err: unknown) {
-    handleIdempotentError(err, confirmSubmit)
+  if (!t || !canConfirmDraft.value) return
+  const evidences = t.evidences.filter((ev) => ev.ai_result_json !== null)
+  if (t.evidences.some((ev) => ev.analysis_id !== null && !ev.ai_result_json) ||
+      !evidences.some((ev) => (ev.ai_result_json?.candidates.length ?? 0) > 0)) {
+    await ElMessageBox.alert('此草稿缺少完整候选数据，无法继续确认。请重新分析或人工报障；原草稿仍然存在。', '无法恢复草稿')
+    return
   }
+  const inspection = useInspectionStore()
+  if (inspection.files.length || inspection.hasAnalyzed || inspection.description.trim()) {
+    const ok = await confirmDialog('继续将替换巡查页面当前未提交的内容，是否继续？', '恢复草稿')
+    if (!ok) return
+  }
+  inspection.resumeDraft(t, evidences)
+  await router.push('/inspection/new')
 }
 
 function focusCancelReason(): void {
@@ -556,11 +619,22 @@ async function handleReviewResolve(): Promise<void> {
   bannerStore.clear()
   actionSuccessMessage.value = null
   try {
+    if (chosen === 'SPECIAL_CLOSE' && pendingUrgeFiles.value.length > 0) {
+      await uploadPendingUrgeEvidences()
+    }
+    const payload: ReviewResolvePayload = { resolution: chosen, reason: reasonText }
+    if (chosen === 'SPECIAL_CLOSE') {
+      // datetime-local 为本地时间，toISOString 输出带 Z 的 UTC，满足带时区契约（naive → 422）
+      payload.urged_at = new Date(resolveUrgedAt.value).toISOString()
+      payload.urged_unit = resolveUrgedUnit.value.trim()
+      payload.urge_evidence_ids = [...uploadedUrgeEvidenceIds.value]
+    }
     await resolveSubmit.run((key, onReplay) =>
-      ticketsStore.reviewResolve(t.id, { resolution: chosen, reason: reasonText }, key, onReplay),
+      ticketsStore.reviewResolve(t.id, payload, key, onReplay),
     )
     resolveResolution.value = null
     resolveReason.value = ''
+    clearUrgeFields()
     actionSuccessMessage.value = '管理员人工复核裁决已完成'
   } catch (err: unknown) {
     handleIdempotentError(err, resolveSubmit)
@@ -918,31 +992,6 @@ async function handleSubmitAcceptance(): Promise<void> {
               />
             </el-select>
           </div>
-
-          <div class="form-field">
-            <label class="filter-label">人工覆盖优先级（可选，留空按规则表自动分级）</label>
-            <el-select
-              v-model="draftPriorityOverride"
-              clearable
-              placeholder="按规则自动分级（推荐）"
-              :teleported="false"
-              style="width: 100%"
-            >
-              <el-option
-                v-for="opt in priorityOptions"
-                :key="opt.value"
-                :label="opt.label"
-                :value="opt.value"
-              />
-            </el-select>
-          </div>
-
-          <div class="form-field" style="justify-content: flex-end">
-            <label class="tomori-checkbox-label">
-              <input v-model="draftSafetyFlag" type="checkbox" class="tomori-checkbox" />
-              <span>存在紧急安全隐患（优先提示处置）</span>
-            </label>
-          </div>
         </div>
 
         <div class="form-field" style="margin-top: 10px">
@@ -965,6 +1014,7 @@ async function handleSubmitAcceptance(): Promise<void> {
           />
         </div>
 
+        <p class="cell-sub">请先保存本页草稿修改，再进入巡查页逐条处置；未保存的修改不会带入。</p>
         <div class="form-actions-row">
           <button
             type="button"
@@ -977,10 +1027,9 @@ async function handleSubmitAcceptance(): Promise<void> {
           <button
             type="button"
             class="tomori-btn tomori-btn--primary"
-            :disabled="!canSubmitDraftConfirm"
             @click="handleConfirmDraft"
           >
-            {{ confirmSubmit.isSubmitting.value ? '确认中...' : '确认立单并进入待派工' }}
+            逐条处置候选
           </button>
         </div>
       </section>
@@ -1231,6 +1280,72 @@ async function handleSubmitAcceptance(): Promise<void> {
               class="tomori-field-error"
             >
               特批关闭结案（SPECIAL_CLOSE）理由不得少于 10 个字（当前 {{ resolveReason.trim().length }} 字）
+            </div>
+          </div>
+
+          <div v-if="isSpecialClose" class="urge-fields-block">
+            <div class="form-field">
+              <label class="filter-label">督促时间（必填；本地时间，提交时转为 UTC）</label>
+              <input
+                v-model="resolveUrgedAt"
+                type="datetime-local"
+                data-testid="escalation-urged-at-input"
+                class="tomori-input"
+                :disabled="!canReviewResolve"
+              />
+            </div>
+
+            <div class="form-field">
+              <label class="filter-label">受督促单位（必填，不超过 128 字）</label>
+              <input
+                v-model="resolveUrgedUnit"
+                type="text"
+                maxlength="128"
+                data-testid="escalation-urged-unit-input"
+                class="tomori-input"
+                :disabled="!canReviewResolve"
+                placeholder="填写受督促单位名称"
+              />
+            </div>
+
+            <div class="form-field">
+              <label class="filter-label">督促凭证附件（必填，至少 1 张静态图片，≤15 MiB/张）</label>
+              <input
+                ref="urgeFileInputRef"
+                type="file"
+                multiple
+                accept="image/jpeg,image/png,image/webp"
+                data-testid="escalation-urge-evidence-input"
+                :disabled="!canReviewResolve || urgeEvidenceUploading"
+                @change="onUrgeFilesChange"
+              />
+              <ul v-if="pendingUrgeFiles.length > 0" class="pending-file-list">
+                <li
+                  v-for="(file, idx) in pendingUrgeFiles"
+                  :key="`urge-${file.name}-${idx}`"
+                  class="pending-file-item"
+                >
+                  <span>{{ file.name }}（{{ formatFileSize(file.size) }}）</span>
+                  <button
+                    type="button"
+                    class="tomori-btn"
+                    style="padding: 2px 8px; font-size: 12px"
+                    @click="removePendingUrgeFile(idx)"
+                  >
+                    移除
+                  </button>
+                </li>
+              </ul>
+              <div v-if="uploadedUrgeEvidenceIds.length > 0" class="hint-text" style="margin-top: 4px">
+                已上传督促凭证 {{ uploadedUrgeEvidenceIds.length }} 份
+              </div>
+              <div v-if="urgeEvidenceError" class="tomori-field-error">{{ urgeEvidenceError }}</div>
+              <div
+                v-else-if="uploadedUrgeEvidenceIds.length + pendingUrgeFiles.length === 0"
+                class="hint-text"
+              >
+                未提供督促凭证时不可提交特批关闭
+              </div>
             </div>
           </div>
 
@@ -1830,6 +1945,16 @@ async function handleSubmitAcceptance(): Promise<void> {
 .review-resolve-panel {
   padding-top: 12px;
   border-top: 1px solid #ebeef5;
+}
+
+.urge-fields-block {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px dashed var(--tomori-border);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .radio-group-vertical {

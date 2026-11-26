@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -202,7 +202,9 @@ class TicketCreateJsonIn(BaseModel):
     description: str | None = None
     safety_flag: bool = False
     manual_note: str | None = None
-    evidence_ids: list[int] = Field(default_factory=list)
+    evidence_ids: list[Annotated[int, Field(strict=True, gt=0)]] = Field(default_factory=list)
+    # 可选：对 evidence_ids 绑入证据内 AI 候选的逐条处置留痕（零故障分析→人工报障路径）
+    candidate_decisions: list[CandidateDecisionIn] | None = None
 
 
 class TicketUpdateDraftIn(BaseModel):
@@ -223,23 +225,37 @@ class TicketUpdateDraftIn(BaseModel):
         return self
 
 
+class CandidateDecisionIn(BaseModel):
+    evidence_id: int = Field(strict=True, gt=0)
+    candidate_id: str = Field(min_length=1)
+    decision: Literal["confirmed", "modified", "rejected"]
+    fault_type: FaultType | None = None
+    manual_note: str | None = Field(default=None, max_length=512)
+
+    @model_validator(mode="after")
+    def validate_decision(self) -> CandidateDecisionIn:
+        if self.decision == "modified":
+            if self.fault_type is None:
+                raise ValueError("修改候选时必须填写 fault_type")
+            if self.fault_type in _MANUAL_NOTE_REQUIRED_TYPES and not (
+                self.manual_note and self.manual_note.strip()
+            ):
+                raise ValueError("改判为 FLICKERING 或 ELECTRIC_HAZARD 时必须填写 manual_note")
+        elif self.fault_type is not None or self.manual_note is not None:
+            raise ValueError("仅 modified 候选可携带 fault_type 或 manual_note")
+        return self
+
+
 class TicketConfirmIn(BaseModel):
     """巡查员确认 AI 候选草稿请求体（POST /tickets/{id}/confirm）。"""
 
-    fault_type: FaultType | None = None
+    fault_type: FaultType
+    candidate_decisions: list[CandidateDecisionIn] = Field(min_length=1)
     priority_override: PriorityCode | None = None
     safety_flag: bool = False
     manual_note: str | None = None
     title: str | None = Field(default=None, min_length=1, max_length=128)
     description: str | None = None
-
-    @model_validator(mode="after")
-    def _validate_manual_note(self) -> TicketConfirmIn:
-        if self.fault_type in _MANUAL_NOTE_REQUIRED_TYPES and not (
-            self.manual_note and self.manual_note.strip()
-        ):
-            raise ValueError("改判为 FLICKERING 或 ELECTRIC_HAZARD 时必须填写 manual_note")
-        return self
 
 
 class TicketCancelIn(BaseModel):
@@ -294,6 +310,7 @@ class FaultTicketDetailOut(FaultTicketOut):
 __all__ = [
     "AiCandidateEvidenceOut",
     "AiCandidatesResponseOut",
+    "CandidateDecisionIn",
     "FaultCandidateOut",
     "FaultCandidateResultOut",
     "FaultEvidenceOut",

@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from tests.integration.conftest import (
     auth_headers_for,
+    build_confirm_payload,
     make_occluded_fault_png,
     make_static_image,
     new_idem_key,
@@ -174,14 +175,15 @@ async def test_all_12_idempotent_posts_cycle(
     )
     manual_tid = int(manual_t["id"])
 
-    # ── #3: POST /tickets/{id}/confirm ──
+    # ── #3: POST /tickets/{id}/confirm (task-25: per-candidate decisions) ──
+    confirm_evidences = r_ai_ok.json()["evidences"]
     await _assert_idempotent_json_cycle(
         api_client,
         async_engine,
         path=f"/api/v1/tickets/{ai_ticket_id}/confirm",
         headers=insp_hdr,
-        payload={"safety_flag": False},
-        mismatch_payload={"safety_flag": True},
+        payload=build_confirm_payload(confirm_evidences),
+        mismatch_payload=build_confirm_payload(confirm_evidences, safety_flag=True),
         expected_status=200,
     )
 

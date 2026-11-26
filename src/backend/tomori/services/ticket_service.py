@@ -45,6 +45,7 @@ from tomori.schemas.dispatch import DispatchRecordOut, MaterialUsageOut, RepairP
 from tomori.schemas.operations import AcceptanceRecordOut, ReworkOrderOut
 from tomori.schemas.ticket import (
     AiCandidateEvidenceOut,
+    CandidateDecisionIn,
     FaultCandidateResultOut,
     FaultEvidenceOut,
     FaultTicketDetailOut,
@@ -552,6 +553,7 @@ async def analyze_ai_candidates_flow(
     *,
     raw_files: list[tuple[bytes, str | None, str | None]],
     lighting_point_id: int | None,
+    facility_asset_id: int | None,
     region_id: int | None,
     scene_lighting_hint: str,
     actor: Account,
@@ -571,6 +573,37 @@ async def analyze_ai_candidates_flow(
         actor=actor,
         has_inspect_scope_fn=has_inspect_scope_fn,
     )
+
+    # 可选设施资产：与人工建单同构校验（存在 → 属目标点位；未给点位时以显式资产反解点位，
+    # 仍须落在已授权目标区域内——不自动猜测点位资产）
+    if facility_asset_id is not None:
+        asset = await session.scalar(
+            select(FacilityAsset).where(FacilityAsset.id == facility_asset_id)
+        )
+        if asset is None:
+            raise AppError(
+                RESOURCE_NOT_FOUND,
+                "设施资产不存在",
+                {"resource_type": "FACILITY_ASSET", "resource_id": facility_asset_id},
+            )
+        if point is not None:
+            if asset.lighting_point_id != point.id:
+                raise AppError(
+                    VALIDATION_ERROR,
+                    "设施资产不属于指定照明点位",
+                    {"facility_asset_id": asset.id, "lighting_point_id": point.id},
+                )
+        else:
+            asset_point = await session.scalar(
+                select(LightingPoint).where(LightingPoint.id == asset.lighting_point_id)
+            )
+            if asset_point is None or asset_point.region_id != target_region_id:
+                raise AppError(
+                    VALIDATION_ERROR,
+                    "设施资产不属于目标运维区域",
+                    {"facility_asset_id": asset.id, "region_id": target_region_id},
+                )
+            point = asset_point
 
     # 2–7. 数量 + 4 层白名单 + EXIF 归一化（全部通过才进入写盘）
     validated = _validate_media_batch(raw_files, min_count=1, max_upload_bytes=max_upload_bytes)
@@ -658,7 +691,7 @@ async def analyze_ai_candidates_flow(
                     ticket_no=await next_ticket_no(session, now=now),
                     region_id=point.region_id,
                     lighting_point_id=point.id,
-                    facility_asset_id=None,
+                    facility_asset_id=facility_asset_id,
                     report_source="AI_CANDIDATE",
                     fault_type=fault_type,
                     title=f"[AI候选] {point.name} {fault_type}"[:128],
@@ -727,6 +760,7 @@ async def create_manual_ticket_flow(
     safety_flag: bool,
     manual_note: str | None,
     evidence_ids: list[int],
+    candidate_decisions: list[CandidateDecisionIn] | None,
     raw_files: list[tuple[bytes, str | None, str | None]],
     actor: Account,
     actor_role_code: str,
@@ -848,15 +882,21 @@ async def create_manual_ticket_flow(
             now=ts,
         )
 
+        orphans: list[FaultEvidence] = []
         if evidence_ids:
-            orphans = (
-                await session.scalars(
-                    select(FaultEvidence).where(
-                        FaultEvidence.id.in_(evidence_ids),
-                        FaultEvidence.ticket_id.is_(None),
-                    )
+            orphan_stmt = select(FaultEvidence).where(
+                FaultEvidence.id.in_(evidence_ids),
+                FaultEvidence.ticket_id.is_(None),
+            )
+            if actor_role_code != "ADMIN":
+                orphan_stmt = orphan_stmt.where(FaultEvidence.uploaded_by_account_id == actor.id)
+            orphans = list((await session.scalars(orphan_stmt.with_for_update())).all())
+            if len(orphans) != len(set(evidence_ids)):
+                raise AppError(
+                    VALIDATION_ERROR,
+                    "证据不存在、已绑定或无权使用",
+                    {"field": "evidence_ids"},
                 )
-            ).all()
             taken = {media.sha256 for media in validated} | {ev.sha256 for ev in orphans}
             if len(taken) != len(validated) + len(orphans):
                 raise AppError(
@@ -866,6 +906,28 @@ async def create_manual_ticket_flow(
                 )
             for evidence in orphans:
                 evidence.ticket_id = ticket.id
+
+        # 有决定必须落在本次绑入证据的真实候选上；无证据携带决定一律 422（防静默丢弃）
+        if candidate_decisions:
+            bound_candidates = {
+                (ev.id, candidate["candidate_id"])
+                for ev in orphans
+                if ev.ai_result_json is not None
+                for candidate in ev.ai_result_json["candidates"]
+            }
+            submitted = {(d.evidence_id, d.candidate_id) for d in candidate_decisions}
+            if len(submitted) != len(candidate_decisions) or not submitted <= bound_candidates:
+                raise AppError(
+                    VALIDATION_ERROR,
+                    "候选处置必须唯一且属于本次绑定证据的 AI 候选",
+                    {"field": "candidate_decisions"},
+                )
+            audits[0].business_snapshot_json = {
+                **(audits[0].business_snapshot_json or {}),
+                "candidate_decisions": [
+                    entry.model_dump(mode="json") for entry in candidate_decisions
+                ],
+            }
 
         await session.flush()
         return ticket, audits
@@ -958,16 +1020,84 @@ async def confirm_ticket_flow(
             },
         )
 
-    if payload.title is not None:
-        ticket.title = payload.title
-    if "description" in payload.model_fields_set:
-        ticket.description = payload.description
-    final_fault_type = payload.fault_type or ticket.fault_type
-    if payload.fault_type is not None and payload.fault_type != ticket.fault_type:
-        _require_manual_note(payload.fault_type, payload.manual_note)
-    ticket.fault_type = final_fault_type
-    if ticket.report_source == "AI_CANDIDATE" and final_fault_type in _MANUAL_NOTE_TYPES:
-        ticket.report_source = "MANUAL_INSPECT"
+    evidences = (
+        await session.scalars(select(FaultEvidence).where(FaultEvidence.ticket_id == ticket.id))
+    ).all()
+    # 决策键 = (evidence_id, candidate_id)：故障候选必须全覆盖唯一；
+    # 参考候选（is_fault_candidate=False）可选项处置并留痕，未知/重复一律 422
+    candidates = {
+        (evidence.id, candidate["candidate_id"]): candidate
+        for evidence in evidences
+        if evidence.ai_result_json is not None
+        for candidate in evidence.ai_result_json["candidates"]
+    }
+    fault_keys = {key for key, candidate in candidates.items() if candidate["is_fault_candidate"]}
+    decisions = {
+        (entry.evidence_id, entry.candidate_id): entry for entry in payload.candidate_decisions
+    }
+    if (
+        not candidates
+        or len(decisions) != len(payload.candidate_decisions)
+        or not decisions.keys() <= candidates.keys()
+        or not fault_keys <= decisions.keys()
+    ):
+        raise AppError(
+            VALIDATION_ERROR,
+            "必须对本工单每个故障候选提交唯一处置，且处置须属于本工单候选",
+            {"field": "candidate_decisions"},
+        )
+    # 保留项有效类型：confirmed 取 AI 类型（参考候选无类型只留痕），modified 取改判类型
+    retained_types = {
+        entry.fault_type
+        if entry.decision == "modified"
+        else candidates[key]["candidate_fault_type"]
+        for key, entry in decisions.items()
+        if entry.decision != "rejected"
+    }
+    retained_types.discard(None)
+    if not retained_types or payload.fault_type not in retained_types:
+        raise AppError(
+            VALIDATION_ERROR,
+            "工单故障类型必须来自至少一个保留候选",
+            {"field": "fault_type"},
+        )
+
+    final_fault_type = payload.fault_type
+    # 缓存不可变标量：savepoint 回滚会 expire ORM 属性，except 路径不得再触发懒加载
+    lighting_point_id = ticket.lighting_point_id
+    ticket_id = ticket.id
+
+    # 改判后的 (点位, 类型) 可能撞上既有活跃单（uq_fault_tickets_active_point_type）：
+    # 应用层先查给出 409 冻结契约；savepoint+flush 兜底确认期间的并发竞态。
+    conflict = await _find_active_duplicate_ticket(
+        session,
+        lighting_point_id=lighting_point_id,
+        fault_type=final_fault_type,
+    )
+    if conflict is not None and conflict.id != ticket_id:
+        raise _duplicate_error(conflict)
+
+    try:
+        async with session.begin_nested():
+            if payload.title is not None:
+                ticket.title = payload.title
+            if "description" in payload.model_fields_set:
+                ticket.description = payload.description
+            ticket.fault_type = final_fault_type
+            if ticket.report_source == "AI_CANDIDATE" and final_fault_type in _MANUAL_NOTE_TYPES:
+                ticket.report_source = "MANUAL_INSPECT"
+            await session.flush()
+    except IntegrityError as exc:
+        if not _is_active_duplicate_violation(exc):
+            raise
+        conflict = await _find_active_duplicate_ticket(
+            session,
+            lighting_point_id=lighting_point_id,
+            fault_type=final_fault_type,
+        )
+        if conflict is None or conflict.id == ticket_id:
+            raise
+        raise _duplicate_error(conflict) from exc
 
     point = await session.scalar(
         select(LightingPoint).where(LightingPoint.id == ticket.lighting_point_id)
@@ -1013,6 +1143,9 @@ async def confirm_ticket_flow(
         snapshot_extra={
             "priority": priority,
             "manual_override": bool(snapshot.get("manual_override")),
+            "candidate_decisions": [
+                entry.model_dump(mode="json") for entry in payload.candidate_decisions
+            ],
         },
         notify=[("TICKET_CONFIRMED", admin_ids)],
         persist_audit=False,

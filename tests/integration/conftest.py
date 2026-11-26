@@ -213,6 +213,39 @@ def make_minimal_png_with_dimensions(width: int, height: int) -> bytes:
     )
 
 
+def build_confirm_payload(
+    evidences: list[dict[str, Any]],
+    *,
+    fault_type: str | None = None,
+    safety_flag: bool = False,
+    extra_fields: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Compose a `TicketConfirmIn` body covering every fault candidate of `evidences`.
+
+    `POST /tickets/{id}/confirm` (task-25) requires a unique decision for every
+    `is_fault_candidate` across all evidences of the draft ticket; default each to
+    `confirmed` and resolve `fault_type` from the first fault candidate.
+    """
+    decisions = [
+        {"evidence_id": ev["id"], "candidate_id": c["candidate_id"], "decision": "confirmed"}
+        for ev in evidences
+        for c in ev["ai_result_json"]["candidates"]
+        if c["is_fault_candidate"]
+    ]
+    resolved = fault_type or next(
+        c["candidate_fault_type"]
+        for ev in evidences
+        for c in ev["ai_result_json"]["candidates"]
+        if c["is_fault_candidate"]
+    )
+    return {
+        "fault_type": resolved,
+        "safety_flag": safety_flag,
+        "candidate_decisions": decisions,
+        **(extra_fields or {}),
+    }
+
+
 def clear_settings_cache() -> None:
     """Clear `tomori.settings.get_settings` lru_cache after env changes."""
     from tomori.settings import get_settings

@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import AuthImage from '@/components/AuthImage.vue'
+import { patchTicketApi } from '@/api/tickets'
 import { isApiError } from '@/shared/api'
 import {
   FAULT_TYPE_LABELS,
@@ -52,6 +53,7 @@ const activeEvidenceIndex = ref(0)
 const showAnnotatedImage = ref(false)
 const submitting = ref(false)
 const submittedSuccess = ref(false)
+const assetSyncInProgress = ref(false)
 
 // Edit candidate dialog state
 const editDialogVisible = ref(false)
@@ -170,7 +172,7 @@ const activePhotoError = computed<{ code: string; message: string } | null>(() =
 })
 
 const requiresManualNote = computed<boolean>(() =>
-  MANUAL_NOTE_REQUIRED_FAULT_TYPES.includes(store.faultType),
+  MANUAL_NOTE_REQUIRED_FAULT_TYPES.includes(store.manualMode ? store.faultType : store.selectedMainFaultType ?? 'OTHER'),
 )
 
 const canAnalyze = computed<boolean>(
@@ -184,26 +186,36 @@ const canAnalyze = computed<boolean>(
 )
 
 const canSubmit = computed<boolean>(() => {
-  if (submitting.value || ticketSubmit.isSubmitting.value) return false
+  if (submitting.value || ticketSubmit.isSubmitting.value || assetSyncInProgress.value) return false
   if (!store.lightingPointId) return false
   if (store.hasQualityFail) return false
   if (requiresManualNote.value && store.manualNote.trim().length === 0) return false
-  if (store.manualMode) return true
+  if (store.manualMode) return !(store.draftTicket && store.referenceCandidates.some((item) => item.decision !== 'pending'))
   if (!store.draftTicket) return false
-  return store.allFaultCandidatesDisposed
+  return store.allFaultCandidatesDisposed && store.selectedMainFaultType !== null &&
+    store.retainedFaultTypes.includes(store.selectedMainFaultType)
 })
 
 const submitGateHint = computed<string>(() => {
   if (!store.lightingPointId) return '请先在 Step 1 选择照明点位'
   if (store.hasQualityFail) return '存在图像质量不合格（fail）的巡查照片，请重新上传后再提交'
+  if (store.manualMode && store.draftTicket && store.referenceCandidates.some((item) => item.decision !== 'pending')) {
+    return '已有参考候选处置，请切回 AI 草稿提交以保存，或重新分析后人工报障'
+  }
   if (requiresManualNote.value && store.manualNote.trim().length === 0) {
     return '当前故障类型为「闪烁 / 电气安全隐患」，请先填写人工判定依据'
   }
   if (!store.manualMode) {
     if (!store.hasAnalyzed) return '请先完成 AI 智能分析（或切换手动填报模式）'
     if (!store.draftTicket) return '本次识别未生成故障单，如现场确有异常请切换手动填报模式'
+    if (store.allFaultCandidatesRejected && store.retainedFaultTypes.length === 0) {
+      return '已剔除全部故障候选，请重新分析、人工报障，或将参考候选改判为故障'
+    }
     if (!store.allFaultCandidatesDisposed) {
       return `请逐条处置全部 AI 故障候选（已处置 ${store.faultDisposedCount} / ${store.faultCandidates.length}）`
+    }
+    if (!store.selectedMainFaultType || !store.retainedFaultTypes.includes(store.selectedMainFaultType)) {
+      return '请选择保留候选中的工单主故障类型'
     }
   }
   return ''
@@ -221,7 +233,7 @@ function syncRegionFromPoint(): void {
 }
 
 watch(
-  () => [store.lightingPointId, store.regionId, store.sceneLightingHint, store.files],
+  () => [store.lightingPointId, store.regionId, store.facilityAssetId, store.sceneLightingHint, store.files],
   () => {
     analyzeSubmit.resetKey()
   },
@@ -238,10 +250,13 @@ watch(
     store.safetyFlag,
     store.manualMode,
     store.files,
+    store.selectedMainFaultType,
+    JSON.stringify(store.decisions),
   ],
   () => {
     ticketSubmit.resetKey()
   },
+  { flush: 'sync' },
 )
 
 onMounted(async () => {
@@ -272,12 +287,54 @@ onBeforeRouteLeave(async () => {
   }
 })
 
-function handlePointChange(pointId: number | string | null | undefined): void {
+// AI 分析草稿与候选处置绑定分析时的点位（Lead 裁决方案 b）：
+// 换点必须显式作废草稿；取消则还原旧点位。
+const previousPointId = ref<number | null>(store.lightingPointId)
+
+async function handlePointChange(pointId: number | string | null | undefined): Promise<void> {
   const numericId = typeof pointId === 'number' ? pointId : null
+  if (store.hasAnalyzed && numericId !== previousPointId.value) {
+    try {
+      await ElMessageBox.confirm(
+        'AI 分析草稿与候选处置记录绑定原点位；更换点位将清除本页分析结果，原草稿仍然存在。新点位需重新分析。确认更换？',
+        '更换点位确认',
+        {
+          confirmButtonText: '清除本页结果并更换',
+          cancelButtonText: '取消',
+          type: 'warning',
+        },
+      )
+      store.discardAnalysis()
+    } catch {
+      store.lightingPointId = previousPointId.value
+      syncRegionFromPoint()
+      return
+    }
+  }
   store.lightingPointId = numericId
   store.facilityAssetId = null
-  const pt = metadataStore.points.find((p) => p.id === numericId)
-  store.regionId = pt ? pt.region_id : null
+  syncRegionFromPoint()
+  previousPointId.value = numericId
+}
+
+// 设施资产是草稿绑定字段而非视觉输入：草稿已生成时变更须 PATCH 同步草稿，
+// 失败还原选择；未分析/人工模式仅更新本页选择，不自动猜测。
+async function handleAssetChange(assetId: number | string | null | undefined): Promise<void> {
+  const numericId = typeof assetId === 'number' ? assetId : null
+  const draft = store.draftTicket
+  if (!store.hasAnalyzed || !draft || store.manualMode || numericId === draft.facility_asset_id) {
+    store.facilityAssetId = numericId
+    return
+  }
+  assetSyncInProgress.value = true
+  try {
+    store.draftTicket = await patchTicketApi(draft.id, { facility_asset_id: numericId })
+    store.facilityAssetId = numericId
+  } catch {
+    store.facilityAssetId = draft.facility_asset_id
+  } finally {
+    assetSyncInProgress.value = false
+  }
 }
 
 async function handleFileChange(event: Event): Promise<void> {
@@ -398,10 +455,7 @@ function getBboxBorderClass(item: FlattenedCandidateItem): string {
 
 function confirmCandidate(item: FlattenedCandidateItem): void {
   if (!item.candidate.is_fault_candidate || store.hasQualityFail) return
-  store.decideCandidate(item.analysisId, item.candidate.candidate_id, 'confirmed')
-  if (item.candidate.candidate_fault_type) {
-    store.faultType = item.candidate.candidate_fault_type
-  }
+  store.decideCandidate(item.evidenceId, item.candidate.candidate_id, 'confirmed')
 }
 
 function openEditCandidate(item: FlattenedCandidateItem): void {
@@ -415,8 +469,12 @@ function openEditCandidate(item: FlattenedCandidateItem): void {
 function saveEditCandidate(): void {
   if (!editingItem.value) return
   const trimmedNote = editNote.value.trim()
+  if (MANUAL_NOTE_REQUIRED_FAULT_TYPES.includes(editFaultType.value) && !trimmedNote) {
+    ElMessage.warning('此候选改判为闪烁或电气安全隐患时必须填写改判说明')
+    return
+  }
   store.decideCandidate(
-    editingItem.value.analysisId,
+    editingItem.value.evidenceId,
     editingItem.value.candidate.candidate_id,
     'modified',
     editFaultType.value,
@@ -443,7 +501,7 @@ async function rejectCandidate(item: FlattenedCandidateItem): Promise<void> {
         type: 'warning',
       },
     )
-    store.decideCandidate(item.analysisId, item.candidate.candidate_id, 'rejected')
+    store.decideCandidate(item.evidenceId, item.candidate.candidate_id, 'rejected')
   } catch {
     // User cancelled
   }
@@ -527,6 +585,7 @@ async function handleSubmit(): Promise<void> {
           <div class="field-label">照明点位（必填）</div>
           <el-select
             v-model="store.lightingPointId"
+            :disabled="store.analyzeInProgress"
             placeholder="请选择授权区域内的照明点位"
             filterable
             :teleported="false"
@@ -556,8 +615,9 @@ async function handleSubmit(): Promise<void> {
             clearable
             filterable
             :teleported="false"
-            :disabled="!store.lightingPointId"
+            :disabled="!store.lightingPointId || store.analyzeInProgress || assetSyncInProgress"
             style="width: 100%"
+            @change="handleAssetChange"
           >
             <el-option
               v-for="asset in pointAssets"
@@ -822,7 +882,7 @@ async function handleSubmit(): Promise<void> {
       <div data-testid="inspection-candidates-list" class="candidate-grid">
         <div
           v-for="item in visibleCandidateCards"
-          :key="`${item.analysisId}-${item.candidate.candidate_id}`"
+          :key="`${item.evidenceId}-${item.candidate.candidate_id}`"
           :data-testid="`inspection-candidate-item-${item.flatIndex}`"
           :data-is-fault-candidate="String(item.candidate.is_fault_candidate)"
           :data-fusion-status="item.candidate.opencv_roi_metrics.fusion_status"
@@ -941,8 +1001,9 @@ async function handleSubmit(): Promise<void> {
       <h3 class="section-heading">Step 5 · 故障详情填报与提交</h3>
       <div class="form-grid">
         <div>
-          <div class="field-label">故障类型</div>
+          <div class="field-label">{{ store.manualMode ? '故障类型' : '工单主故障类型（从保留候选中选择）' }}</div>
           <el-select
+            v-if="store.manualMode"
             v-model="store.faultType"
             :teleported="false"
             style="width: 100%"
@@ -954,6 +1015,9 @@ async function handleSubmit(): Promise<void> {
               :label="opt.label"
               :value="opt.value"
             />
+          </el-select>
+          <el-select v-else v-model="store.selectedMainFaultType" :teleported="false" style="width: 100%" data-testid="inspection-fault-type-select">
+            <el-option v-for="type in store.retainedFaultTypes" :key="type" :label="FAULT_TYPE_LABELS[type]" :value="type" />
           </el-select>
         </div>
 
@@ -1039,13 +1103,14 @@ async function handleSubmit(): Promise<void> {
             class="hint-text"
             style="margin-top: 4px; color: var(--tomori-warning)"
           >
-            闪烁与电气隐患提交前须在 Step 5（或下方说明）填写人工判定依据
+            改判为闪烁或电气隐患时必须在下方填写该候选的人工判定依据
           </div>
         </div>
         <div>
           <div class="field-label">改判说明（可选）</div>
           <textarea
             v-model="editNote"
+            maxlength="512"
             class="tomori-textarea"
             placeholder="可填写修改理由或现场人工依据"
           />

@@ -5,13 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime
-from typing import Any
+from typing import Any, Final
 
 from fastapi import APIRouter, Depends, Header, Query, Request, status
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import ValidationError
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.datastructures import UploadFile
 
 from tomori.api.deps import (
     CurrentPrincipal,
@@ -54,6 +55,7 @@ from tomori.services.auth import get_authorized_region_ids
 from tomori.services.dispatch import compute_dispatch_candidates, dispatch_ticket
 from tomori.services.exceptions import (
     EVIDENCE_NOT_ANNOTATED,
+    IMAGE_SIZE_EXCEEDED,
     RESOURCE_NOT_FOUND,
     VALIDATION_ERROR,
     AppError,
@@ -78,9 +80,45 @@ from tomori.services.ticket_service import (
     ticket_to_out,
     upload_ticket_evidences_flow,
 )
-from tomori.settings import get_settings
+from tomori.settings import MAX_FILES_PER_REQUEST, get_settings
 
 router = APIRouter(tags=["tickets"])
+
+_FORM_OVERHEAD_BYTES: Final[int] = 1024 * 1024  # multipart 边界与字段头余量 1 MiB
+
+
+def _reject_oversized_body(request: Request, *, max_upload_bytes: int) -> None:
+    """multipart 解析前先校验 `Content-Length` 声明总量：超限直接 413 不读体。
+
+    服务层的逐文件大小校验发生在 `request.form()` 全量解析与 `item.read()`
+    之后；此处先以声明长度拦截超上限请求体，避免超限流量先占内存/临时盘再被拒。
+    """
+    declared = request.headers.get("content-length")
+    if declared is None:
+        return
+    try:
+        size = int(declared)
+    except ValueError:
+        return
+    limit = max_upload_bytes * MAX_FILES_PER_REQUEST + _FORM_OVERHEAD_BYTES
+    if size > limit:
+        raise AppError(
+            IMAGE_SIZE_EXCEEDED,
+            "请求体声明大小超过单次上传总量上限",
+            {"declared_bytes": size, "max_bytes": limit},
+        )
+
+
+async def _read_capped_file(item: UploadFile, *, max_upload_bytes: int) -> bytes:
+    """按 `max+1` 截断读取单文件内容，超限立即 413 而非读满后才校验。"""
+    raw = await item.read(max_upload_bytes + 1)
+    if len(raw) > max_upload_bytes:
+        raise AppError(
+            IMAGE_SIZE_EXCEEDED,
+            "单个文件大小超过上传上限",
+            {"filename": item.filename, "max_bytes": max_upload_bytes},
+        )
+    return raw
 
 
 async def _parse_optional_int(raw: Any, field_name: str) -> int | None:
@@ -172,23 +210,25 @@ async def create_ai_candidates(
     ctx: RequestContext = Depends(get_request_context),  # noqa: B008
 ) -> JSONResponse:
     settings = get_settings()
+    _reject_oversized_body(request, max_upload_bytes=settings.max_upload_size_bytes)
     form = await request.form()
     reject_stream_fields(form)
 
+    file_items = form.getlist("files")
+    validate_upload_count(len(file_items), min_count=1, max_count=10)
     raw_files: list[tuple[bytes, str | None, str | None]] = []
     file_digests: list[tuple[str, str, int]] = []
-    for item in form.getlist("files"):
+    for item in file_items:
         if isinstance(item, str):
             reject_stream_fields({"files": item})
             raise AppError(VALIDATION_ERROR, "files 字段必须为文件上传项")
-        raw = await item.read()
+        raw = await _read_capped_file(item, max_upload_bytes=settings.max_upload_size_bytes)
         fname = item.filename
         ctype = item.content_type
         raw_files.append((raw, fname, ctype))
         file_digests.append((fname or "upload", hashlib.sha256(raw).hexdigest(), len(raw)))
 
     # 先执行 Step 2–6 纯内存白名单校验（不落盘、不依赖视觉），再进咨询锁与推理
-    validate_upload_count(len(raw_files), min_count=1, max_count=10)
     for idx, (raw, fname, ctype) in enumerate(raw_files):
         validate_and_normalize_image(
             raw,
@@ -200,6 +240,9 @@ async def create_ai_candidates(
 
     lighting_point_id = await _parse_optional_int(
         form.get("lighting_point_id"), "lighting_point_id"
+    )
+    facility_asset_id = await _parse_optional_int(
+        form.get("facility_asset_id"), "facility_asset_id"
     )
     region_id = await _parse_optional_int(form.get("region_id"), "region_id")
     scene_hint = str(form.get("scene_lighting_hint") or "auto").strip() or "auto"
@@ -213,6 +256,7 @@ async def create_ai_candidates(
     payload_hash = hash_multipart_payload(
         fields={
             "lighting_point_id": lighting_point_id,
+            "facility_asset_id": facility_asset_id,
             "region_id": region_id,
             "scene_lighting_hint": scene_hint,
         },
@@ -235,6 +279,7 @@ async def create_ai_candidates(
             tx,
             raw_files=raw_files,
             lighting_point_id=lighting_point_id,
+            facility_asset_id=facility_asset_id,
             region_id=region_id,
             scene_lighting_hint=scene_hint,
             actor=principal.account,
@@ -258,6 +303,7 @@ async def create_ai_candidates(
             business_snapshot_json=primary_audit.business_snapshot_json,
             sanitized_request_payload={
                 "lighting_point_id": lighting_point_id,
+                "facility_asset_id": facility_asset_id,
                 "region_id": region_id,
                 "scene_lighting_hint": scene_hint,
                 "file_count": len(raw_files),
@@ -301,30 +347,68 @@ async def create_manual_ticket(
     file_digests: list[tuple[str, str, int]] = []
 
     if "multipart/form-data" in ctype:
+        _reject_oversized_body(request, max_upload_bytes=settings.max_upload_size_bytes)
         form = await request.form()
         reject_stream_fields(form)
-        for item in form.getlist("files"):
+        file_items = form.getlist("files")
+        validate_upload_count(len(file_items), min_count=0, max_count=10)
+        for item in file_items:
             if isinstance(item, str):
                 reject_stream_fields({"files": item})
                 raise AppError(VALIDATION_ERROR, "files 字段必须为文件上传项")
-            raw = await item.read()
+            raw = await _read_capped_file(item, max_upload_bytes=settings.max_upload_size_bytes)
             raw_files.append((raw, item.filename, item.content_type))
             file_digests.append(
                 (item.filename or "upload", hashlib.sha256(raw).hexdigest(), len(raw))
             )
 
+        def _strict_evidence_id(value: object) -> int:
+            if isinstance(value, bool):
+                raise ValueError("bool")
+            if isinstance(value, int):
+                item = value
+            elif isinstance(value, str) and value.strip().isdigit():
+                item = int(value.strip())
+            else:
+                raise ValueError("not int")
+            if item <= 0:
+                raise ValueError("not positive")
+            return item
+
         ev_ids_raw = form.getlist("evidence_ids")
         parsed_ev_ids: list[int] = []
-        for entry in ev_ids_raw:
-            s = str(entry).strip()
-            if not s:
-                continue
-            if s.startswith("["):
-                loaded = json.loads(s)
-                if isinstance(loaded, list):
-                    parsed_ev_ids.extend(int(x) for x in loaded)
-            else:
-                parsed_ev_ids.extend(int(x) for x in s.split(",") if x.strip())
+        try:
+            for entry in ev_ids_raw:
+                s = str(entry).strip()
+                if not s:
+                    continue
+                if s.startswith("["):
+                    loaded = json.loads(s)
+                    if not isinstance(loaded, list):
+                        raise ValueError("not a list")
+                    parsed_ev_ids.extend(_strict_evidence_id(x) for x in loaded)
+                else:
+                    parsed_ev_ids.extend(
+                        _strict_evidence_id(part) for part in s.split(",") if part.strip()
+                    )
+        except (json.JSONDecodeError, TypeError, ValueError, OverflowError) as exc:
+            raise AppError(
+                VALIDATION_ERROR,
+                "evidence_ids 必须为正整数或正整数数组",
+                {"field": "evidence_ids"},
+            ) from exc
+
+        decisions_raw = form.get("candidate_decisions")
+        parsed_decisions: Any = None
+        if decisions_raw:
+            try:
+                parsed_decisions = json.loads(str(decisions_raw))
+            except (json.JSONDecodeError, TypeError) as exc:
+                raise AppError(
+                    VALIDATION_ERROR,
+                    "candidate_decisions 必须为合法 JSON 数组",
+                    {"field": "candidate_decisions"},
+                ) from exc
 
         raw_body: dict[str, Any] = {
             "lighting_point_id": await _parse_optional_int(
@@ -339,6 +423,7 @@ async def create_manual_ticket(
             "safety_flag": str(form.get("safety_flag") or "false").lower() == "true",
             "manual_note": form.get("manual_note"),
             "evidence_ids": parsed_ev_ids,
+            "candidate_decisions": parsed_decisions,
         }
         try:
             payload = TicketCreateJsonIn.model_validate(raw_body)
@@ -360,6 +445,8 @@ async def create_manual_ticket(
     else:
         try:
             body_json = await request.json()
+        except AppError:
+            raise
         except Exception as exc:
             raise AppError(VALIDATION_ERROR, "请求体必须为合法 JSON") from exc
         if isinstance(body_json, dict):
@@ -408,6 +495,7 @@ async def create_manual_ticket(
             safety_flag=payload.safety_flag,
             manual_note=payload.manual_note,
             evidence_ids=payload.evidence_ids,
+            candidate_decisions=payload.candidate_decisions,
             raw_files=raw_files,
             actor=principal.account,
             actor_role_code=principal.role_code,
@@ -879,6 +967,7 @@ async def upload_ticket_evidences(
     await _check_ticket_read_access(session, ctx=ctx, principal=principal, ticket=ticket)
 
     settings = get_settings()
+    _reject_oversized_body(request, max_upload_bytes=settings.max_upload_size_bytes)
     form = await request.form()
     reject_stream_fields(form)
     ev_type = str(form.get("evidence_type") or "REPAIR_PHOTO").strip()
@@ -890,12 +979,14 @@ async def upload_ticket_evidences(
     }:
         raise AppError(VALIDATION_ERROR, "evidence_type 不合法", {"field": "evidence_type"})
 
+    file_items = form.getlist("files")
+    validate_upload_count(len(file_items), min_count=1, max_count=10)
     raw_files: list[tuple[bytes, str | None, str | None]] = []
-    for item in form.getlist("files"):
+    for item in file_items:
         if isinstance(item, str):
             reject_stream_fields({"files": item})
             raise AppError(VALIDATION_ERROR, "files 字段必须为文件上传项")
-        raw = await item.read()
+        raw = await _read_capped_file(item, max_upload_bytes=settings.max_upload_size_bytes)
         raw_files.append((raw, item.filename, item.content_type))
 
     evs = await upload_ticket_evidences_flow(

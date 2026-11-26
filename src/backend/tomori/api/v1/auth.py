@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from typing import Final
 
 from fastapi import APIRouter, Depends, Query, Response, status
 from sqlalchemy import func, or_, select
@@ -55,6 +56,13 @@ from tomori.services.exceptions import (
 )
 
 router = APIRouter(tags=["auth"])
+
+# 角色与可授 scope_type 的一一映射（明显错配即拒，如 TECHNICIAN 不得持 MANAGE）
+_ROLE_SCOPE_TYPE: Final[dict[str, str]] = {
+    "ADMIN": "MANAGE",
+    "INSPECTOR": "INSPECT",
+    "TECHNICIAN": "REPAIR",
+}
 
 
 def _to_scope_out(
@@ -608,6 +616,28 @@ async def create_scope_authorization(
             "目标账号不存在",
             {"resource_type": "ACCOUNT", "resource_id": payload.account_id},
         )
+
+    # 角色-授权类型错配拦截：ADMIN→MANAGE / INSPECTOR→INSPECT / TECHNICIAN→REPAIR
+    role_code = await get_account_role_code(session, acc.id)
+    expected_scope = _ROLE_SCOPE_TYPE.get(role_code or "")
+    if expected_scope is None:
+        raise AppError(
+            VALIDATION_ERROR,
+            "目标账号缺少有效角色，无法授予区域授权",
+            {"account_id": acc.id, "role_code": role_code},
+        )
+    if payload.scope_type != expected_scope:
+        raise AppError(
+            VALIDATION_ERROR,
+            "角色与授权类型不匹配",
+            {
+                "account_id": acc.id,
+                "role_code": role_code,
+                "scope_type": payload.scope_type,
+                "expected_scope_type": expected_scope,
+            },
+        )
+
     region = await session.scalar(
         select(MaintenanceRegion).where(MaintenanceRegion.id == payload.region_id)
     )

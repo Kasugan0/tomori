@@ -11,14 +11,18 @@ import {
   type TicketListParams,
   type UpdateTicketDraftPayload,
 } from '@/api/tickets'
-import { submitAcceptanceApi, reviewResolveTicketApi, type AcceptanceSubmitPayload } from '@/api/operations'
+import {
+  submitAcceptanceApi,
+  reviewResolveTicketApi,
+  type AcceptanceSubmitPayload,
+  type ReviewResolvePayload,
+} from '@/api/operations'
 import { dispatchTicketApi, reassignTicketApi, type DispatchTicketPayload, type ReassignTicketPayload } from '@/api/dispatches'
 import type {
   AcceptanceResponseOut,
   FaultTicketDetailOut,
   FaultTicketOut,
   PriorityCode,
-  ReviewResolution,
 } from '@/shared/types'
 
 export const useTicketsStore = defineStore('tickets', () => {
@@ -121,7 +125,7 @@ export const useTicketsStore = defineStore('tickets', () => {
 
   async function reviewResolve(
     ticketId: number,
-    payload: { resolution: ReviewResolution; reason: string },
+    payload: ReviewResolvePayload,
     idempotencyKey: string,
     onReplay?: () => void,
   ): Promise<FaultTicketDetailOut> {

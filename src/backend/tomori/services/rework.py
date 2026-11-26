@@ -25,6 +25,7 @@ from tomori.models.acceptance_record import AcceptanceRecord
 from tomori.models.account import Account
 from tomori.models.audit_log import AuditLog
 from tomori.models.dispatch_record import DispatchRecord
+from tomori.models.fault_evidence import FaultEvidence
 from tomori.models.fault_ticket import FaultTicket
 from tomori.models.repair_process import RepairProcess
 from tomori.models.rework_order import ReworkOrder
@@ -494,6 +495,24 @@ async def review_resolve_ticket(
         return target_ticket, [ticket_audit]
 
     if payload.resolution == "SPECIAL_CLOSE":
+        # 督促留证三要素已由 Schema 保证非空；此处再校验凭证归属本票
+        # （郑州市令第 152 号第 19 条第 3 款：督促时间/受督促单位/凭证入 audit_logs）
+        urge_ids = list(dict.fromkeys(payload.urge_evidence_ids))
+        urged_unit_text = (payload.urged_unit or "").strip()
+        urge_rows = list(
+            (
+                await session.scalars(select(FaultEvidence).where(FaultEvidence.id.in_(urge_ids)))
+            ).all()
+        )
+        if len(urge_rows) != len(urge_ids) or any(
+            ev.ticket_id != target_ticket.id for ev in urge_rows
+        ):
+            raise AppError(
+                VALIDATION_ERROR,
+                "urge_evidence_ids 必须引用本工单已上传的证据",
+                {"field": "urge_evidence_ids", "urge_evidence_ids": payload.urge_evidence_ids},
+            )
+
         rework_snapshot = {}
         if active_rework is not None and active_rework.status == "IN_MANUAL_REVIEW":
             await transition_rework(
@@ -521,6 +540,9 @@ async def review_resolve_ticket(
             snapshot_extra={
                 "resolution": "SPECIAL_CLOSE",
                 "reason": reason_text,
+                "urged_at": ensure_utc(payload.urged_at).isoformat(),
+                "urged_unit": urged_unit_text,
+                "urge_evidence_ids": urge_ids,
                 **rework_snapshot,
             },
             notify=[("TICKET_CLOSED", [target_ticket.reporter_account_id, *region_admin_ids])],

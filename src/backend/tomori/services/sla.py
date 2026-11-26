@@ -270,20 +270,39 @@ async def run_sla_scan(
         await session.flush()
 
     # 段 3：派工接单超时防死锁回收（PENDING_ACCEPT -> TIMEOUT_REASSIGNED + 票推回 PENDING_DISPATCH）
-    timeout_dispatches_stmt = (
-        select(DispatchRecord)
-        .where(
-            DispatchRecord.status == "PENDING_ACCEPT",
-            DispatchRecord.accept_deadline_at < current_time,
-        )
-        .order_by(DispatchRecord.id.asc())
-        .with_for_update(skip_locked=True)
+    # 锁序与业务路径统一为 ticket -> dispatch：先无锁取候选 ID，
+    # 逐条先锁工单再锁派工并复核谓词（ticket_id 为不可变外键，可安全先读）
+    timeout_dispatch_ids = list(
+        (
+            await session.scalars(
+                select(DispatchRecord.id)
+                .where(
+                    DispatchRecord.status == "PENDING_ACCEPT",
+                    DispatchRecord.accept_deadline_at < current_time,
+                )
+                .order_by(DispatchRecord.id.asc())
+            )
+        ).all()
     )
-    expired_dispatches = list((await session.scalars(timeout_dispatches_stmt)).all())
-    for disp in expired_dispatches:
-        disp_ticket = await session.scalar(
-            select(FaultTicket).where(FaultTicket.id == disp.ticket_id).with_for_update()
+    for disp_id in timeout_dispatch_ids:
+        probe = await session.scalar(
+            select(DispatchRecord.ticket_id).where(DispatchRecord.id == disp_id)
         )
+        if probe is not None:
+            disp_ticket = await session.scalar(
+                select(FaultTicket).where(FaultTicket.id == probe).with_for_update()
+            )
+        else:
+            disp_ticket = None
+        disp = await session.scalar(
+            select(DispatchRecord).where(DispatchRecord.id == disp_id).with_for_update()
+        )
+        if (
+            disp is None
+            or disp.status != "PENDING_ACCEPT"
+            or ensure_utc(disp.accept_deadline_at) >= current_time
+        ):
+            continue
         ticket_is_dispatched = disp_ticket is not None and disp_ticket.status == "DISPATCHED"
 
         await transition_dispatch(

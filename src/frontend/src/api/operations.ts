@@ -79,9 +79,20 @@ export async function getReworkOrderApi(reworkOrderId: number): Promise<ReworkOr
   return data
 }
 
+// 与后端 schemas/operations.py ReviewResolveIn 对齐：
+// SPECIAL_CLOSE 必须携带 urged_at（带时区 ISO）、urged_unit（非空）、urge_evidence_ids（≥1）；
+// 其他 resolution 不得携带（服务端对非空字段回 422）。
+export interface ReviewResolvePayload {
+  resolution: ReviewResolution
+  reason: string
+  urged_at?: string | null
+  urged_unit?: string | null
+  urge_evidence_ids?: number[]
+}
+
 export async function reviewResolveTicketApi(
   ticketId: number,
-  payload: { resolution: ReviewResolution; reason: string },
+  payload: ReviewResolvePayload,
   idempotencyKey: string,
   onReplay?: () => void,
 ): Promise<FaultTicketOut> {

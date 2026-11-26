@@ -279,24 +279,10 @@ async def accept_dispatch_route(
     ctx: RequestContext = Depends(get_request_context),  # noqa: B008
 ) -> JSONResponse:
     async def _handler(tx: AsyncSession) -> IdempotentOutcome:
-        disp = await tx.scalar(
-            select(DispatchRecord).where(DispatchRecord.id == dispatch_id).with_for_update()
-        )
-        if disp is None:
-            raise AppError(
-                RESOURCE_NOT_FOUND,
-                "派工记录不存在",
-                {"resource_type": "DISPATCH", "resource_id": dispatch_id},
-            )
-        ticket = await tx.scalar(
-            select(FaultTicket).where(FaultTicket.id == disp.ticket_id).with_for_update()
-        )
-        if ticket is None:
-            raise AppError(RESOURCE_NOT_FOUND, "关联工单不存在")
+        # 锁序统一由服务层保证（ticket -> dispatch），路由不再先行加锁
         updated_disp, updated_ticket, audits = await accept_dispatch(
             tx,
-            dispatch=disp,
-            ticket=ticket,
+            dispatch_id=dispatch_id,
             actor=principal.account,
             actor_role_code=principal.role_code,
         )
@@ -344,24 +330,9 @@ async def reject_dispatch_route(
     ctx: RequestContext = Depends(get_request_context),  # noqa: B008
 ) -> JSONResponse:
     async def _handler(tx: AsyncSession) -> IdempotentOutcome:
-        disp = await tx.scalar(
-            select(DispatchRecord).where(DispatchRecord.id == dispatch_id).with_for_update()
-        )
-        if disp is None:
-            raise AppError(
-                RESOURCE_NOT_FOUND,
-                "派工记录不存在",
-                {"resource_type": "DISPATCH", "resource_id": dispatch_id},
-            )
-        ticket = await tx.scalar(
-            select(FaultTicket).where(FaultTicket.id == disp.ticket_id).with_for_update()
-        )
-        if ticket is None:
-            raise AppError(RESOURCE_NOT_FOUND, "关联工单不存在")
         updated_disp, updated_ticket, audits = await reject_dispatch(
             tx,
-            dispatch=disp,
-            ticket=ticket,
+            dispatch_id=dispatch_id,
             payload=payload,
             actor=principal.account,
             actor_role_code=principal.role_code,
@@ -407,25 +378,9 @@ async def escalate_dispatch_route(
     principal: CurrentPrincipal = Depends(require_roles("TECHNICIAN")),  # noqa: B008
     session: AsyncSession = Depends(get_session),  # noqa: B008
 ) -> DispatchRecordOut:
-    disp = await session.scalar(
-        select(DispatchRecord).where(DispatchRecord.id == dispatch_id).with_for_update()
-    )
-    if disp is None:
-        raise AppError(
-            RESOURCE_NOT_FOUND,
-            "派工记录不存在",
-            {"resource_type": "DISPATCH", "resource_id": dispatch_id},
-        )
-    ticket = await session.scalar(
-        select(FaultTicket).where(FaultTicket.id == disp.ticket_id).with_for_update()
-    )
-    if ticket is None:
-        raise AppError(RESOURCE_NOT_FOUND, "关联工单不存在")
-
     updated_disp, updated_ticket = await escalate_dispatch(
         session,
-        dispatch=disp,
-        ticket=ticket,
+        dispatch_id=dispatch_id,
         escalate_reason=payload.escalate_reason,
         actor=principal.account,
         actor_role_code=principal.role_code,
@@ -450,24 +405,9 @@ async def complete_dispatch_route(
     ctx: RequestContext = Depends(get_request_context),  # noqa: B008
 ) -> JSONResponse:
     async def _handler(tx: AsyncSession) -> IdempotentOutcome:
-        disp = await tx.scalar(
-            select(DispatchRecord).where(DispatchRecord.id == dispatch_id).with_for_update()
-        )
-        if disp is None:
-            raise AppError(
-                RESOURCE_NOT_FOUND,
-                "派工记录不存在",
-                {"resource_type": "DISPATCH", "resource_id": dispatch_id},
-            )
-        ticket = await tx.scalar(
-            select(FaultTicket).where(FaultTicket.id == disp.ticket_id).with_for_update()
-        )
-        if ticket is None:
-            raise AppError(RESOURCE_NOT_FOUND, "关联工单不存在")
         updated_disp, updated_ticket, repair, mats, audits = await complete_dispatch(
             tx,
-            dispatch=disp,
-            ticket=ticket,
+            dispatch_id=dispatch_id,
             payload=payload,
             actor=principal.account,
             actor_role_code=principal.role_code,

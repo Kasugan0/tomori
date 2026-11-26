@@ -123,10 +123,16 @@ async def test_ticket_transitions_wrong_source_state_return_422_with_detail_keys
     # manual ticket is PENDING_DISPATCH (not AI_CANDIDATE_PENDING)
     tid, _, _ = await _mk_ticket(api_client, title="P1 流转负路径", idem_prefix="p1t")
 
-    # confirm requires AI_CANDIDATE_PENDING -> 422
+    # confirm requires AI_CANDIDATE_PENDING -> 422; schema-valid decisions reach state gate
     r_confirm = await api_client.post(
         f"/api/v1/tickets/{tid}/confirm",
-        json={"safety_flag": False},
+        json={
+            "fault_type": "LAMP_OUT",
+            "safety_flag": False,
+            "candidate_decisions": [
+                {"evidence_id": 1, "candidate_id": "x", "decision": "confirmed"}
+            ],
+        },
         headers={**insp_hdr, "Idempotency-Key": new_idem_key("p1t-cf")},
     )
     assert r_confirm.status_code == 422
@@ -171,17 +177,31 @@ async def test_ticket_transitions_wrong_source_state_return_422_with_detail_keys
     assert r_reassign.status_code == 422
     assert _err(r_reassign)["code"] == "INVALID_STATE_TRANSITION"
 
-    # review-resolve requires MANUAL_REVIEW -> 422 on PENDING_DISPATCH
+    # review-resolve requires MANUAL_REVIEW -> 422 on PENDING_DISPATCH.
+    # SPECIAL_CLOSE without urged_* now fails schema first (VALIDATION_ERROR);
+    # use schema-valid TERMINATE_CANCEL to reach the state gate.
     r_review = await api_client.post(
         f"/api/v1/tickets/{tid2}/review-resolve",
         json={
-            "resolution": "SPECIAL_CLOSE",
+            "resolution": "TERMINATE_CANCEL",
             "reason": "试图在非复核态直接裁决",
         },
         headers={**admin_hdr, "Idempotency-Key": new_idem_key("p1u-rv")},
     )
     assert r_review.status_code == 422
     assert _err(r_review)["code"] == "INVALID_STATE_TRANSITION"
+
+    # SPECIAL_CLOSE without urged_at/urged_unit/urge_evidence_ids -> VALIDATION_ERROR
+    r_sc_fields = await api_client.post(
+        f"/api/v1/tickets/{tid2}/review-resolve",
+        json={
+            "resolution": "SPECIAL_CLOSE",
+            "reason": "试图在非复核态直接裁决",
+        },
+        headers={**admin_hdr, "Idempotency-Key": new_idem_key("p1u-sv")},
+    )
+    assert r_sc_fields.status_code == 422
+    assert _err(r_sc_fields)["code"] == "VALIDATION_ERROR"
 
     # acceptance requires PENDING_ACCEPTANCE -> 422 on PENDING_DISPATCH
     r_acc = await api_client.post(
@@ -349,7 +369,13 @@ async def test_region_scope_gate_precedes_state_gate_on_transitions(
         (
             "post",
             f"/api/v1/tickets/{zd_tid}/confirm",
-            {"safety_flag": False},
+            {
+                "fault_type": "LAMP_OUT",
+                "safety_flag": False,
+                "candidate_decisions": [
+                    {"evidence_id": 1, "candidate_id": "x", "decision": "confirmed"}
+                ],
+            },
             "FORBIDDEN_REGION_SCOPE",
         ),
         (
