@@ -155,22 +155,41 @@ def _run_integrity_assertions() -> None:
             f"({len(rework_mismatch_rows)} rows)"
         )
 
-    # Assertion 5: exactly 17 base tables exist (excluding alembic_version)
-    table_count = conn.execute(
-        sa.text(
-            """
-            SELECT count(*)
-            FROM information_schema.tables
-            WHERE table_schema = 'public'
-              AND table_type = 'BASE TABLE'
-              AND table_name <> 'alembic_version'
-            """
-        )
-    ).scalar_one()
-    if table_count != 17:
-        raise RuntimeError(
-            f"Integrity assertion 5 failed: expected 17 business base tables, got {table_count}"
-        )
+    # 固定 0003 时点的表集合，后续新增表由新迁移负责。
+    expected_tables = frozenset(
+        {
+            "acceptance_records",
+            "account_roles",
+            "accounts",
+            "audit_logs",
+            "business_rules",
+            "dispatch_records",
+            "facility_assets",
+            "fault_evidences",
+            "fault_tickets",
+            "lighting_points",
+            "maintenance_regions",
+            "material_usages",
+            "notification_tasks",
+            "repair_processes",
+            "rework_orders",
+            "roles",
+            "scope_authorizations",
+        }
+    )
+    found_tables = set(
+        conn.execute(
+            sa.text(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' "
+                "AND table_name IN :names"
+            ).bindparams(sa.bindparam("names", expanding=True)),
+            {"names": sorted(expected_tables)},
+        ).scalars()
+    )
+    missing_tables = expected_tables - found_tables
+    if missing_tables:
+        raise RuntimeError(f"Integrity assertion 5 failed: missing tables {sorted(missing_tables)}")
 
 
 def upgrade() -> None:
