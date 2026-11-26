@@ -460,7 +460,17 @@ def run_training_pipeline(cfg: TrainConfig) -> TrainArtifacts:
                 else None
             )
             if p_best is not None and p_best.is_file():
-                best_pt = p_best
+                # 精修产物接管部署位：pre-polish best 改名留证，
+                # `weights/best.pt` 始终指向被评估/导出/记入清单的最终权重，
+                # 消除 metrics.sha256 与 SHA256SUMS 同名不同实的错位
+                canonical_best = weights_dir / "best.pt"
+                if (
+                    best_pt.resolve() == canonical_best.resolve()
+                    and not (weights_dir / "best_pre_polish.pt").exists()
+                ):
+                    shutil.copy2(best_pt, weights_dir / "best_pre_polish.pt")
+                shutil.copy2(p_best, canonical_best)
+                best_pt = canonical_best
     if cfg.export_only:
         stopped_epoch_1based = None
 
@@ -539,11 +549,13 @@ def run_training_pipeline(cfg: TrainConfig) -> TrainArtifacts:
         except (OSError, json.JSONDecodeError):
             dataset_manifest = None
 
+    # 键名用实际文件名：export_only 的 --weights 可为任意文件名，
+    # 固定写 "best.pt" 会让 metrics 哈希与清单同名不同实
     sha256_map: dict[str, str] = {
-        "best.pt": _sha256_file(best_pt),
+        best_pt.name: _sha256_file(best_pt),
         "best_e2e.onnx": _sha256_file(best_e2e_onnx),
     }
-    if last_pt.is_file():
+    if not cfg.export_only and last_pt.is_file():
         sha256_map["last.pt"] = _sha256_file(last_pt)
 
     metrics_payload: dict[str, Any] = {
@@ -562,7 +574,7 @@ def run_training_pipeline(cfg: TrainConfig) -> TrainArtifacts:
             "early_stopping_nms": False,
             "comparison_head": "one2many_external_nms",
             "comparison_nms": None,
-            "deploy_artifact": "weights/best_e2e.onnx",
+            "deploy_artifact": str(best_e2e_onnx.relative_to(run_dir)),
             "note": (
                 "EarlyStopping 监控训练内 validate() 的 mAP50-95；训练已传 nms=False，"
                 "故早停判据头与 best_e2e.onnx 部署头同为 one2one 端到端头。"
@@ -621,14 +633,17 @@ def run_training_pipeline(cfg: TrainConfig) -> TrainArtifacts:
         encoding="utf-8",
     )
 
+    # 清单 = 本次运行实际评测/导出/写出的文件，按相对 run_dir 的真实路径记录；
+    # last.pt、results.csv、args.yaml 是训练运行产物，export_only 不列
     sha_targets = [
-        "weights/best.pt",
-        "weights/best_e2e.onnx",
-        "weights/last.pt",
-        "results.csv",
-        "args.yaml",
-        "metrics.json",
+        str(best_pt.relative_to(run_dir)),
+        str(best_e2e_onnx.relative_to(run_dir)),
     ]
+    if not cfg.export_only:
+        sha_targets += ["weights/last.pt", "results.csv", "args.yaml"]
+    sha_targets.append("metrics.json")
+    if not cfg.export_only and (weights_dir / "best_pre_polish.pt").is_file():
+        sha_targets.append("weights/best_pre_polish.pt")
     sha256sums = _write_sha256sums(run_dir, sha_targets)
 
     return TrainArtifacts(

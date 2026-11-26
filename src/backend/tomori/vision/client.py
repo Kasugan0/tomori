@@ -53,6 +53,12 @@ __all__ = [
 
 _VALID_INFERENCE_MODES = frozenset({"auto", "strict_custom"})
 
+# 超时无法终止运行中的线程；槽位直到线程实际结束才释放。
+_INFER_POOL = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="vision-infer"
+)
+_INFER_SLOT = threading.BoundedSemaphore(1)
+
 
 class _OnnxInvalidArgumentError(VisionError, ValueError):
     """ONNX 启动期形状/配置校验失败：既是 `VisionError(503 VISION_DISABLED)` 也是 `ValueError`."""
@@ -839,22 +845,34 @@ class VisionClient:
         timeout_s = float(self.settings.vision_timeout_seconds)
 
         def _infer() -> Any:
-            if mode == "yolo26_onnx_e2e" and onnx_bundle is not None:
-                return self._run_onnx_infer(bgr, onnx_bundle)
-            if mode == "yolo26_pt" and weight_file is not None:
-                return self._run_pt_infer(bgr, weight_file)
-            return baseline.detect(bgr, quality)
+            try:
+                if mode == "yolo26_onnx_e2e" and onnx_bundle is not None:
+                    return self._run_onnx_infer(bgr, onnx_bundle)
+                if mode == "yolo26_pt" and weight_file is not None:
+                    return self._run_pt_infer(bgr, weight_file)
+                return baseline.detect(bgr, quality)
+            finally:
+                _INFER_SLOT.release()
 
-        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        future = pool.submit(_infer)
+        if not _INFER_SLOT.acquire(blocking=False):
+            raise make_degraded_error(
+                VISION_TIMEOUT,
+                "视觉推理繁忙，请稍后重试",
+                analysis_stage="INFERENCE",
+            )
+        try:
+            future = _INFER_POOL.submit(_infer)
+        except BaseException:
+            _INFER_SLOT.release()
+            raise
+        future.add_done_callback(lambda done: _INFER_SLOT.release() if done.cancelled() else None)
         try:
             raw_infer_out = future.result(timeout=timeout_s)
         except VisionError:
-            pool.shutdown(wait=False, cancel_futures=True)
             raise
         except (concurrent.futures.TimeoutError, TimeoutError) as exc:
+            # 仍在排队则可移除出池；已在运行的推理在共享池内至多占 1 个槽位（界内可控）
             future.cancel()
-            pool.shutdown(wait=False, cancel_futures=True)
             raise make_degraded_error(
                 VISION_TIMEOUT,
                 f"视觉推理超过 {timeout_s:g} 秒上限",
@@ -862,14 +880,11 @@ class VisionClient:
                 details={"timeout_seconds": timeout_s},
             ) from exc
         except Exception as exc:
-            pool.shutdown(wait=False, cancel_futures=True)
             raise make_degraded_error(
                 VISION_INFERENCE_FAILED,
                 f"视觉推理执行异常: {exc}",
                 analysis_stage="INFERENCE",
             ) from exc
-        else:
-            pool.shutdown(wait=True)
 
         try:
             detections: list[RawDetection]

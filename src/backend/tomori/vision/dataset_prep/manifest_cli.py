@@ -332,11 +332,18 @@ def prepare_dataset(cfg: DatasetPrepConfig) -> PrepResult:
     if any(v != 0 for v in leakage_checks.values()):
         raise RuntimeError(f"检测到跨 split 数据泄漏或预增广污染: {leakage_checks}")
 
-    # 落盘输出目录
+    # 落盘输出目录：先清空六个 split 目录既有文件再写本批，
+    # 防止换分组/种子复用输出目录时旧 split 残留样本造成跨 split 污染
+    # （内存校验只覆盖本批样本，盘上残留不参与 leakage_checks）
     out_dir = cfg.output_dir
     for split_name in ("train", "val", "test"):
-        (out_dir / "images" / split_name).mkdir(parents=True, exist_ok=True)
-        (out_dir / "labels" / split_name).mkdir(parents=True, exist_ok=True)
+        for sub in ("images", "labels"):
+            split_dir = out_dir / sub / split_name
+            if split_dir.is_dir():
+                for stale in split_dir.iterdir():
+                    if stale.is_file() or stale.is_symlink():
+                        stale.unlink()
+            split_dir.mkdir(parents=True, exist_ok=True)
 
     split_image_counts: Counter[str] = Counter()
     split_box_counts: Counter[str] = Counter()
