@@ -6,11 +6,11 @@
 
 ## 当前状态
 
-> **阶段一 + 阶段二均已完成**：冻结基线 `42eb94e`（设计文档套件）+ `origin/main` 最新 `50df47e`（`39` 条严格线性提交、全 `G` 签名），`43` 条裁决已收口落定（`23 ✅ / 20 🟢`，`D-41`/`D-42`/`D-43` 为 `nc=3`/`occluded` 弃用与 `merged_v6`/`merged_v7` 清洗管线新裁决，零待决项）。**阶段二已完结**：`60` 个业务端点 + Vue 3 SPA + `src/backend/tomori/` 单包实现 + `streetlight_v3`（`nc=3`/`merged_v7`）训练完结并验收；`118` 单测+集成 + `31` E2E 全绿。
+> **阶段一 + 阶段二均已完成**：冻结基线 `42eb94e`（设计文档套件）+ `origin/main` 最新 `9a093ca`（自基线起 `55` 条严格线性提交、全 `G` 签名），`43` 条裁决已收口落定（`23 ✅ / 20 🟢`，`D-41`/`D-42`/`D-43` 为 `nc=3`/`occluded` 弃用与 `merged_v6`/`merged_v7` 清洗管线新裁决，零待决项）。**阶段二已完结**：`60` 个业务端点 + Vue 3 SPA + `src/backend/tomori/` 单包实现 + `streetlight_v5`（`nc=3`/`merged_v8`）训练完结并验收；`121` 单测+集成 + `31` E2E 全绿。
 
 **阶段一冻结基线（`42eb94e`）时仓库没有任何应用代码**：无 `src/` 业务实现、无 `src/frontend/`、无 `tests/`、无 `migrations/`，`pyproject.toml` 的 `dependencies = []`。该基线当时唯一的交付物是精简合并后的**设计文档套件**（`docs/` 根下仅 5 份核心文档：`DECISION.md`、`REQUIREMENTS.md`、`DESIGN.md`、`API.md`、`RUNBOOK.md`；`docs/team/` 属本地过程产物，已 `.gitignore` 不入库）。
 
-**阶段二已完结（`src` 三层布局）**：Python 源码统一位于 **`src/backend/tomori/`** 单包（所有 import 为 `tomori.*`，`module-name="tomori"`/`module-root="src/backend"`），`alembic.ini` 与 `migrations/`（`0001..0004`）位于**仓库根**，前端 `src/frontend/`（Vue 3 SPA，`pnpm`），测试 `tests/`（`unit`/`integration`/`e2e`），数据 DDL `src/database/{schema.sql,seed.sql}`，`60` 个业务端点 + `34` 个 `error.code` + `12` 个幂等端点全部落地；根级 `vision/` 仅存运行时产物（`weights/`、`reports/`，gitignored——`streetlight_v3` 自定义权重 `best_e2e.onnx` `nc=3` 已回传并经 `sha256sum -c` 校验），视觉源码位于 `src/backend/tomori/vision/`。
+**阶段二已完结（`src` 三层布局）**：Python 源码统一位于 **`src/backend/tomori/`** 单包（所有 import 为 `tomori.*`，`module-name="tomori"`/`module-root="src/backend"`），`alembic.ini` 与 `migrations/`（`0001..0004`）位于**仓库根**，前端 `src/frontend/`（Vue 3 SPA，`pnpm`），测试 `tests/`（`unit`/`integration`/`e2e`），数据 DDL `src/database/{schema.sql,seed.sql}`，`60` 个业务端点 + `34` 个 `error.code` + `12` 个幂等端点全部落地；根级 `vision/` 仅存运行时产物（`weights/`、`reports/`，gitignored——存有 `streetlight_v5` 报告及 `best_e2e.onnx`；历史权重清单与指标哈希不一致，产物身份待重建验证），视觉源码位于 `src/backend/tomori/vision/`。
 
 仓库里可运行的运维内容：`deploy/stack-guard.sh`（本地 PostgreSQL 栈启停与环境校验脚本，**已实测可用**）、`compose.yaml`（PostgreSQL 容器编排）、`deploy/postgres/init-dbs.sql`（创建 `tomori_dev` / `tomori_test`）。
 
@@ -29,7 +29,7 @@
 | [`docs/04-详细设计.md`](docs/04-详细设计.md) | `4` 状态机 `29` 态/`36` 规则条目·`47` `(from,to)` 图边/`transition_*`/`34` 错误码/`INVALID_STATE_TRANSITION`/`MANUAL_FALLBACK`/`DEAD_LETTER` |
 | [`docs/05-数据设计.md`](docs/05-数据设计.md) | `17` 表/`76` CHECK/`41` FK/`37` 索引/`6` 部分唯一/`alembic` `0001..0004`/`seed_demo_data`/`business_rules` `5` 默认 |
 | [`docs/06-接口设计.md`](docs/06-接口设计.md) | `61` 端点清单 + `health`/`ai-candidates`/`whitelist`/`mapping`/`VisionClient`/`error.code` `34`/`HTTP_STATUS_BY_CODE`/`fallback`/`MANUAL_FALLBACK`/`requires_inspector_confirmation`/`ai_is_baseline_mode`/`vision_ready` |
-| [`docs/07-测试说明.md`](docs/07-测试说明.md) | `118` 单测+集成 + `31` E2E + `128` testid + `19` 变异杀灭（`auditor` `task-208` 实跑 `~11` 条，`tester` 归因含新增路径合计量纲吻合）+ `nc=3` 断言 + `69%` 覆盖率 + `PASS`/`SKIP`/`0` mock |
+| [`docs/07-测试说明.md`](docs/07-测试说明.md) | `121` 单测+集成 + `31` E2E + `128` testid + `19` 变异杀灭（`auditor` `task-208` 实跑 `~11` 条，`tester` 归因含新增路径合计量纲吻合）+ `nc=3` 断言 + `69%` 覆盖率 + `PASS`/`SKIP`/`0` mock |
 | [`docs/08-部署与使用说明.md`](docs/08-部署与使用说明.md) | `PG`/`uv`/`pnpm`/`uv sync`/`alembic`/`compose`/`env.sh`/`remote GPU`/`SSH`/`.env`/`application.yml`/`uvicorn`/`vite`/`worker`/`trainer`/`dataset_prep`/`rsync`/`sha256sum`/`admin`/`inspector`/`technician`/`health`/`ai-candidates`/`tickets`/`dispatches` |
 | [`docs/09-需求追踪表.md`](docs/09-需求追踪表.md) | `requirement-traceability.md` `15` 格矩阵 + `FR`→端点→测试 `29` 条映射 |
 
@@ -41,7 +41,7 @@
 
 **后端**　FastAPI · SQLAlchemy 2.0 Async · psycopg v3 · Alembic · PostgreSQL 17 · Python 3.12
 **前端**　Vue 3 · TypeScript · Vite · Element Plus
-**视觉**　Ultralytics YOLO `8.4.216`（`==` 精确 pin）· OpenCV（进程内 Python 模块，不做独立视觉服务）；自定义权重 `yolo26s.pt @ 1280` **`nc=3`**（`streetlight_on`/`streetlight_off`/`streetlight_damaged`），`streetlight_v3` 已训成产出（`vision/weights/` gitignored，`baseline_pretrained_opencv` 兜底降级）；训练口径 `epochs=500 + patience=20` + `data.yaml.names` 权威源
+**视觉**　Ultralytics YOLO `8.4.216`（`==` 精确 pin）· OpenCV（进程内 Python 模块，不做独立视觉服务）；自定义权重 `yolo26s.pt @ 1280` **`nc=3`**（`streetlight_on`/`streetlight_off`/`streetlight_damaged`），`streetlight_v5` 已训成产出（`vision/weights/` gitignored，`baseline_pretrained_opencv` 兜底降级）；训练口径 `epochs=500 + patience=50 + batch=24 + mosaic_polish_epochs=20` + `data.yaml.names` 权威源
 **工具链**　`uv` · `pnpm` · Docker Compose
 
 依赖布局为**单包 `src/backend` 内 `tomori` 包**：根 `pyproject.toml` 是唯一的包定义（`[tool.uv.build-backend]` 的 `module-name="tomori"`、`module-root="src/backend"`），源码全部位于 `src/backend/tomori/`；视觉依赖隔离在 `[project.optional-dependencies] vision` 中，用 `uv sync --extra vision` 安装，避免 `torch` 的 GB 级体积拖累后端开发。目录树与门禁命令见 `docs/03-概要设计.md` 与 `docs/08-部署与使用说明.md`。
@@ -56,11 +56,14 @@
 ./deploy/stack-guard.sh status
 
 # 2. 同步 Python 依赖并执行 Alembic 异步迁移（需先按 .env.example 配置 .env）
-uv sync
+#    --extra vision 安装视觉依赖组；省略则 YOLO 推理不可用
+uv sync --extra vision
 uv run alembic -c alembic.ini upgrade head
 
 # 3. 启动后端 FastAPI（127.0.0.1:18141）与前端 Vite SPA（127.0.0.1:15173）
+#    uvicorn 前台运行占用当前终端；前端命令需另开一个终端执行
 uv run uvicorn tomori.main:app --host 127.0.0.1 --port 18141
+pnpm --dir src/frontend install   # 首次或依赖变更后执行一次
 pnpm --dir src/frontend dev
 ```
 
@@ -80,7 +83,7 @@ pnpm --dir src/frontend dev
 
 **智能能力的边界**：只处理**静态巡查图片**；AI 产出的故障候选**必须经巡查员确认**才能进入派工，模型不得直接驱动业务。
 
-**已知边界**：`streetlight_v3`/`nc=3` 自定义权重已训成产出（`val mAP50=0.607`/`test 0.662`，`on 0.939`/`off 0.785`/`damaged 0.304`）并回传经 `sha256sum -c` 校验；视觉模块自定义模式已实跑（`D-30` 夜间亮灯参照 + `damaged` 类候选全通）；`baseline_pretrained_opencv` 兜底降级链保留（置信度受 DB `CHECK` 封顶 `0.65`），`strict_custom` 模式在权重缺失时返回 `503 VISION_DISABLED`。`streetlight_occluded` 已弃用（`d1` 源 `235` 框/`merged_v5` 合并 `227` 框 `~95%` 错标，`API` `fault_type=OCCLUDED` 保留手工报障）。
+**已知边界**：`streetlight_v5` 历史报告记录 `val mAP50=0.600`/`test 0.681`，`on 0.932`/`off 0.791`/`damaged 0.322`；报告中的 `best.pt` 哈希与清单不一致，原精修目录缺失，权重身份不可追溯，需重新训练或重建并验证；视觉模块自定义模式已实跑（`D-30` 夜间亮灯参照 + `damaged` 类候选全通）；`baseline_pretrained_opencv` 兜底降级链保留（置信度受 DB `CHECK` 封顶 `0.65`），`strict_custom` 模式在权重缺失时返回 `503 VISION_DISABLED`。`streetlight_occluded` 已弃用（`d1` 源 `235` 框/`merged_v5` 合并 `227` 框 `~95%` 错标，`API` `fault_type=OCCLUDED` 保留手工报障）。
 
 ---
 
@@ -90,4 +93,4 @@ pnpm --dir src/frontend dev
 |---|---|---|
 | 阶段一 | 需求规格、系统设计（架构/状态机/机制/Schema/视觉）、API 契约、裁决清单、运维手册 | ✅ 设计定稿（`42eb94e` 签名落盘，43 条裁决全部收口） |
 | 阶段一审计 | 独立审计 6 项 P0 + 4 项 P1 | ✅ 全部修正并复核 |
-| 阶段二 | `src/backend/tomori/`（含 `vision/`）、`src/frontend/`、`migrations/`（`0001..0004`）、`tests/` 实现 + `streetlight_v3`/`nc=3` 训练完结 + `docs/` `01`–`09` 实测回填 | ✅ **已完结**（`60` 端点 + `118` 单测/集成 + `31` E2E 全绿；`merged_v7`/`nc=3` `streetlight_v3` `val mAP50=0.607`/`test 0.662`，`D-30`+`damaged` 验收通过，`origin/main = 50df47e`） |
+| 阶段二 | `src/backend/tomori/`（含 `vision/`）、`src/frontend/`、`migrations/`（`0001..0004`）、`tests/` 实现 + `streetlight_v5`/`nc=3` 训练完结 + `docs/` `01`–`09` 实测回填 | ✅ **已完结**（`60` 端点 + `121` 单测/集成 + `31` E2E 全绿；`merged_v8`/`nc=3` `streetlight_v5` `val mAP50=0.600`/`test 0.681`，`D-30`+`damaged` 验收通过，`origin/main = 9a093ca`） |

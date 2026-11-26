@@ -258,7 +258,8 @@ TOMORI_PG_PORT=${TOMORI_PG_PORT}
 TOMORI_PG_TEST_DB=${TOMORI_PG_TEST_DB}
 E2E_BACKEND_PORT=${E2E_BACKEND_PORT}
 E2E_FRONTEND_PORT=${E2E_FRONTEND_PORT}
-E2E_DATABASE_URL=postgresql+psycopg://${TOMORI_PG_USER}:${TOMORI_PG_PASSWORD}@${TOMORI_PG_HOST}:${TOMORI_PG_PORT}/${TOMORI_PG_TEST_DB}
+# Password intentionally omitted (writes plaintext to lock file/stdout otherwise).
+E2E_DATABASE_URL=postgresql+psycopg://${TOMORI_PG_USER}:****@${TOMORI_PG_HOST}:${TOMORI_PG_PORT}/${TOMORI_PG_TEST_DB}
 EOF
 
   echo "[stack-guard] E2E window claimed:"

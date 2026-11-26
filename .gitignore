@@ -60,6 +60,10 @@ audits/
 .env.*.local
 !.env.example
 
+# Local real YAML config (never commit; template is config/application.example.yml)
+application.yml
+config/application.yml
+
 # Logs & OS / editor temporary files
 *.log
 .DS_Store
