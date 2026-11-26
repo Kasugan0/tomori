@@ -57,9 +57,11 @@ export interface CompleteRepairResponseOut {
 
 export async function getDispatchCandidatesApi(
   ticketId: number,
+  skipGlobalErrorBanner = false,
 ): Promise<DispatchCandidatesResponseOut> {
   const { data } = await apiClient.get<DispatchCandidatesResponseOut>(
     `/tickets/${ticketId}/dispatch-candidates`,
+    { metaFlags: { skipGlobalErrorBanner } },
   )
   return data
 }

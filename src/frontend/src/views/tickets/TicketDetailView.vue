@@ -1,10 +1,9 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
-import { dispatchTicketApi, getDispatchCandidatesApi } from '@/api/dispatches'
+import { getDispatchCandidatesApi } from '@/api/dispatches'
 import type { ReviewResolvePayload } from '@/api/operations'
-import { uploadTicketEvidencesApi } from '@/api/tickets'
 import AuthImage from '@/components/AuthImage.vue'
 import PriorityTag from '@/components/PriorityTag.vue'
 import StatusTag from '@/components/StatusTag.vue'
@@ -34,6 +33,7 @@ import type {
   DispatchCandidateItem,
   DispatchExcludedItem,
   FaultEvidenceOut,
+  FaultTicketOut,
   FaultTicketDetailOut,
   FaultType,
   PriorityCode,
@@ -53,6 +53,13 @@ const ticketsStore = useTicketsStore()
 const bannerStore = useErrorBannerStore()
 
 const ticketId = computed<number>(() => Number(route.params.ticketId))
+let viewGeneration = 0
+onBeforeUnmount(() => {
+  viewGeneration++
+})
+function isSameContext(generation: number, expectedTicketId: number): boolean {
+  return generation === viewGeneration && ticketId.value === expectedTicketId
+}
 const ticket = computed<FaultTicketDetailOut | null>(() => {
   if (!ticketsStore.detail) return null
   return ticketsStore.detail.id === ticketId.value ? ticketsStore.detail : null
@@ -68,13 +75,15 @@ const loadError = ref<string | null>(null)
 const actionSuccessMessage = ref<string | null>(null)
 
 // 权限裁决统一走 actions.ts can()
-const canConfirmDraft = computed(() => can('confirm', ticket.value, currentUser.value))
-const canCancelTicket = computed(() => can('cancel', ticket.value, currentUser.value))
-const canRegradeTicket = computed(() => can('regrade', ticket.value, currentUser.value))
-const canDispatchTicket = computed(() => can('dispatch', ticket.value, currentUser.value))
-const canReassignTicket = computed(() => can('reassign', ticket.value, currentUser.value))
-const canAcceptTicket = computed(() => can('acceptance', ticket.value, currentUser.value))
-const canReviewResolve = computed(() => can('review-resolve', ticket.value, currentUser.value))
+const detailStale = computed(() => ticketsStore.staleTicketIds.includes(ticketId.value))
+const ticketWriteBlocked = computed(() => detailStale.value || ticketsStore.writingTicketIds.includes(ticketId.value))
+const canConfirmDraft = computed(() => !ticketWriteBlocked.value && can('confirm', ticket.value, currentUser.value))
+const canCancelTicket = computed(() => !ticketWriteBlocked.value && can('cancel', ticket.value, currentUser.value))
+const canRegradeTicket = computed(() => !ticketWriteBlocked.value && can('regrade', ticket.value, currentUser.value))
+const canDispatchTicket = computed(() => !ticketWriteBlocked.value && can('dispatch', ticket.value, currentUser.value))
+const canReassignTicket = computed(() => !ticketWriteBlocked.value && can('reassign', ticket.value, currentUser.value))
+const canAcceptTicket = computed(() => !ticketWriteBlocked.value && can('acceptance', ticket.value, currentUser.value))
+const canReviewResolve = computed(() => !ticketWriteBlocked.value && can('review-resolve', ticket.value, currentUser.value))
 
 const isSlaOverdue = computed(() => {
   const t = ticket.value
@@ -155,7 +164,7 @@ const resolveReasonInputRef = ref<HTMLTextAreaElement | null>(null)
 const resolveUrgedAt = ref('')
 const resolveUrgedUnit = ref('')
 const pendingUrgeFiles = ref<File[]>([])
-const uploadedUrgeEvidenceIds = ref<number[]>([])
+const uploadedUrgeEvidenceIds = computed(() => ticketsStore.getUploadedEvidence(ticketId.value, 'urge'))
 const urgeEvidenceError = ref<string | null>(null)
 const urgeEvidenceUploading = ref(false)
 const urgeFileInputRef = ref<HTMLInputElement | null>(null)
@@ -195,7 +204,6 @@ function clearUrgeFields(): void {
   resolveUrgedAt.value = ''
   resolveUrgedUnit.value = ''
   pendingUrgeFiles.value = []
-  uploadedUrgeEvidenceIds.value = []
   urgeEvidenceError.value = null
   if (urgeFileInputRef.value) {
     urgeFileInputRef.value.value = ''
@@ -228,20 +236,24 @@ function removePendingUrgeFile(idx: number): void {
 async function uploadPendingUrgeEvidences(): Promise<number[]> {
   const t = ticket.value
   if (!t || pendingUrgeFiles.value.length === 0) return []
+  const expectedTicketId = t.id
+  const generation = viewGeneration
   const validation = await validateStaticImageFiles(pendingUrgeFiles.value)
+  if (!isSameContext(generation, expectedTicketId)) throw new Error('STALE_TICKET_CONTEXT')
   if (!validation.valid) {
     urgeEvidenceError.value = validation.message || '图片校验未通过'
     throw new Error(validation.code || 'VALIDATION_ERROR')
   }
   urgeEvidenceUploading.value = true
   try {
-    const uploaded = await uploadTicketEvidencesApi(
-      t.id,
+    const uploaded = await ticketsStore.uploadEvidence(
+      expectedTicketId,
       pendingUrgeFiles.value,
       'ACCEPTANCE_PHOTO',
+      'urge',
     )
     const ids = uploaded.map((ev) => ev.id)
-    uploadedUrgeEvidenceIds.value = [...uploadedUrgeEvidenceIds.value, ...ids]
+    if (!isSameContext(generation, expectedTicketId)) throw new Error('STALE_TICKET_CONTEXT')
     pendingUrgeFiles.value = []
     if (urgeFileInputRef.value) {
       urgeFileInputRef.value.value = ''
@@ -258,7 +270,7 @@ const acceptDecision = ref<AcceptanceDecision | null>(null)
 const acceptComment = ref('')
 const lastReworkCreated = ref<ReworkOrderOut | null>(null)
 const pendingAcceptFiles = ref<File[]>([])
-const uploadedAcceptEvidenceIds = ref<number[]>([])
+const uploadedAcceptEvidenceIds = computed(() => ticketsStore.getUploadedEvidence(ticketId.value, 'acceptance'))
 const acceptPhotoError = ref<string | null>(null)
 const acceptPhotoUploading = ref(false)
 const acceptFileInputRef = ref<HTMLInputElement | null>(null)
@@ -315,7 +327,7 @@ async function confirmDialog(
   }
 }
 
-function syncDraftFromTicket(detail: FaultTicketDetailOut): void {
+function syncDraftFromTicket(detail: FaultTicketOut): void {
   draftTitle.value = detail.title
   draftFaultType.value = detail.fault_type
   draftDescription.value = detail.description ?? ''
@@ -334,6 +346,9 @@ function resetTransientForms(): void {
   regradeReason.value = ''
   regradeSubmit.resetKey()
   dispatchDialogVisible.value = false
+  loadingCandidates.value = false
+  candidateList.value = []
+  excludedList.value = []
   dispatchCandidateId.value = null
   dispatchRemark.value = ''
   dispatchSubmit.resetKey()
@@ -349,7 +364,6 @@ function resetTransientForms(): void {
   acceptComment.value = ''
   lastReworkCreated.value = null
   pendingAcceptFiles.value = []
-  uploadedAcceptEvidenceIds.value = []
   acceptPhotoError.value = null
   acceptSubmit.resetKey()
 }
@@ -392,9 +406,17 @@ watch([acceptDecision, acceptComment], () => {
   if (!acceptSubmit.isSubmitting.value) acceptSubmit.resetKey()
 })
 
+watch(() => authStore.sessionGeneration, () => {
+  viewGeneration++
+  clearUrgeFields()
+  resetTransientForms()
+}, { flush: 'sync' })
+
 watch(
   () => route.params.ticketId,
   () => {
+    viewGeneration++
+    clearUrgeFields()
     resetTransientForms()
     void loadDetail()
   },
@@ -405,16 +427,19 @@ async function handleSaveDraft(): Promise<void> {
   const t = ticket.value
   if (!t || !canConfirmDraft.value) return
   if (draftRequiresManualNote.value && draftManualNote.value.trim().length === 0) return
+  const expectedTicketId = t.id
+  const generation = viewGeneration
   bannerStore.clear()
   actionSuccessMessage.value = null
   draftSaving.value = true
   try {
-    const detail = await ticketsStore.updateDraft(t.id, {
+    const detail = await ticketsStore.updateDraft(expectedTicketId, {
       title: draftTitle.value.trim(),
       fault_type: draftFaultType.value,
       description: draftDescription.value.trim() || null,
       manual_note: draftManualNote.value.trim() || null,
     })
+    if (!isSameContext(generation, expectedTicketId)) return
     syncDraftFromTicket(detail)
     actionSuccessMessage.value = '草稿修改已保存'
   } catch {
@@ -452,19 +477,22 @@ function focusCancelReason(): void {
 async function handleCancelConfirm(): Promise<void> {
   const t = ticket.value
   if (!t || !canCancelTicket.value || cancelReason.value.trim().length === 0) return
+  const expectedTicketId = t.id
+  const generation = viewGeneration
   const ok = await confirmDialog(
     '撤销后该点位释放重复报障限制，可重新报障。确认撤销本工单？',
     '确认撤销误报',
     '确认撤销',
   )
-  if (!ok) return
+  if (!ok || !isSameContext(generation, expectedTicketId)) return
 
   bannerStore.clear()
   actionSuccessMessage.value = null
   try {
     await cancelSubmit.run((key, onReplay) =>
-      ticketsStore.cancel(t.id, cancelReason.value.trim(), key, onReplay),
+      ticketsStore.cancel(expectedTicketId, cancelReason.value.trim(), key, onReplay),
     )
+    if (!isSameContext(generation, expectedTicketId)) return
     cancelReason.value = ''
     actionSuccessMessage.value = '工单已撤销（CANCELLED），点位防重限制已释放'
   } catch (err: unknown) {
@@ -482,17 +510,20 @@ function openRegradeDialog(): void {
 async function handleRegradeSubmit(): Promise<void> {
   const t = ticket.value
   if (!t || !canRegradeTicket.value || regradeReason.value.trim().length === 0) return
+  const expectedTicketId = t.id
+  const generation = viewGeneration
   bannerStore.clear()
   actionSuccessMessage.value = null
   try {
     await regradeSubmit.run((key, onReplay) =>
       ticketsStore.regrade(
-        t.id,
+        expectedTicketId,
         { priority: regradePriority.value, reason: regradeReason.value.trim() },
         key,
         onReplay,
       ),
     )
+    if (!isSameContext(generation, expectedTicketId)) return
     regradeDialogVisible.value = false
     regradeReason.value = ''
     actionSuccessMessage.value = `优先级已调整为 ${regradePriority.value}（法定 48h 修复截止时间不变）`
@@ -501,18 +532,23 @@ async function handleRegradeSubmit(): Promise<void> {
   }
 }
 
+let candidateRequest = 0
 async function loadDispatchCandidates(id: number): Promise<void> {
+  const generation = viewGeneration
+  const request = ++candidateRequest
+  const isCurrent = () => request === candidateRequest && isSameContext(generation, id)
   loadingCandidates.value = true
   candidateList.value = []
   excludedList.value = []
   try {
-    const res = await getDispatchCandidatesApi(id)
+    const res = await getDispatchCandidatesApi(id, true)
+    if (!isCurrent()) return
     candidateList.value = res.candidates
     excludedList.value = res.excluded
-  } catch {
-    // 全局错误横幅处理
+  } catch (err: unknown) {
+    if (isCurrent() && isApiError(err)) bannerStore.showFromApiError(err)
   } finally {
-    loadingCandidates.value = false
+    if (isCurrent()) loadingCandidates.value = false
   }
 }
 
@@ -528,15 +564,17 @@ function openDispatchDialog(): void {
 async function handleDispatchSubmit(): Promise<void> {
   const t = ticket.value
   if (!t || !canDispatchTicket.value || dispatchCandidateId.value === null) return
+  const expectedTicketId = t.id
+  const generation = viewGeneration
   const candidate = candidateList.value.find((c) => c.account_id === dispatchCandidateId.value)
   if (!candidate) return
 
   bannerStore.clear()
   actionSuccessMessage.value = null
   try {
-    await dispatchSubmit.run(async (key, onReplay) => {
-      await dispatchTicketApi(
-        t.id,
+    await dispatchSubmit.run((key, onReplay) =>
+      ticketsStore.dispatch(
+        expectedTicketId,
         {
           technician_account_id: candidate.account_id,
           scope_authorization_id: candidate.scope_authorization_id,
@@ -545,9 +583,9 @@ async function handleDispatchSubmit(): Promise<void> {
         },
         key,
         onReplay,
-      )
-      return ticketsStore.fetchDetail(t.id)
-    })
+      ),
+    )
+    if (!isSameContext(generation, expectedTicketId)) return
     dispatchDialogVisible.value = false
     actionSuccessMessage.value = `已派工给 ${candidate.full_name}（${candidate.username}）`
   } catch (err: unknown) {
@@ -569,6 +607,8 @@ async function handleReassignSubmit(): Promise<void> {
   const t = ticket.value
   if (!t || !canReassignTicket.value) return
   if (reassignCandidateId.value === null || reassignReason.value.trim().length === 0) return
+  const expectedTicketId = t.id
+  const generation = viewGeneration
   const candidate = candidateList.value.find((c) => c.account_id === reassignCandidateId.value)
   if (!candidate) return
 
@@ -577,7 +617,7 @@ async function handleReassignSubmit(): Promise<void> {
   try {
     await reassignSubmit.run((key, onReplay) =>
       ticketsStore.reassign(
-        t.id,
+        expectedTicketId,
         {
           technician_account_id: candidate.account_id,
           scope_authorization_id: candidate.scope_authorization_id,
@@ -588,6 +628,7 @@ async function handleReassignSubmit(): Promise<void> {
         onReplay,
       ),
     )
+    if (!isSameContext(generation, expectedTicketId)) return
     reassignDialogVisible.value = false
     reassignReason.value = ''
     actionSuccessMessage.value = `已改派给 ${candidate.full_name}（${candidate.username}）`
@@ -606,32 +647,45 @@ function focusResolveSection(): void {
 async function handleReviewResolve(): Promise<void> {
   const t = ticket.value
   if (!t || !canSubmitResolve.value || resolveResolution.value === null) return
+  const expectedTicketId = t.id
+  const generation = viewGeneration
   const chosen = resolveResolution.value
   const reasonText = resolveReason.value.trim()
+  const urgedAtValue = resolveUrgedAt.value
+  const urgedUnitValue = resolveUrgedUnit.value.trim()
+  const existingUrgeIds = [...uploadedUrgeEvidenceIds.value]
 
   const ok = await confirmDialog(
     `确认执行人工复核裁决「${REVIEW_RESOLUTION_LABELS[chosen]}」？`,
     '确认复核裁决',
     '确认裁决',
   )
-  if (!ok) return
+  if (!ok || !isSameContext(generation, expectedTicketId)) return
 
   bannerStore.clear()
   actionSuccessMessage.value = null
   try {
+    let urgeIds = existingUrgeIds
     if (chosen === 'SPECIAL_CLOSE' && pendingUrgeFiles.value.length > 0) {
-      await uploadPendingUrgeEvidences()
+      const uploadedIds = await uploadPendingUrgeEvidences()
+      if (!isSameContext(generation, expectedTicketId)) return
+      urgeIds = [...existingUrgeIds, ...uploadedIds]
+      if (ticketsStore.staleTicketIds.includes(expectedTicketId)) {
+        actionSuccessMessage.value = '证据上传成功，请重新加载后继续提交复核裁决'
+        return
+      }
     }
     const payload: ReviewResolvePayload = { resolution: chosen, reason: reasonText }
     if (chosen === 'SPECIAL_CLOSE') {
       // datetime-local 为本地时间，toISOString 输出带 Z 的 UTC，满足带时区契约（naive → 422）
-      payload.urged_at = new Date(resolveUrgedAt.value).toISOString()
-      payload.urged_unit = resolveUrgedUnit.value.trim()
-      payload.urge_evidence_ids = [...uploadedUrgeEvidenceIds.value]
+      payload.urged_at = new Date(urgedAtValue).toISOString()
+      payload.urged_unit = urgedUnitValue
+      payload.urge_evidence_ids = urgeIds
     }
     await resolveSubmit.run((key, onReplay) =>
-      ticketsStore.reviewResolve(t.id, payload, key, onReplay),
+      ticketsStore.reviewResolve(expectedTicketId, payload, key, onReplay),
     )
+    if (!isSameContext(generation, expectedTicketId)) return
     resolveResolution.value = null
     resolveReason.value = ''
     clearUrgeFields()
@@ -672,20 +726,24 @@ function removePendingAcceptFile(idx: number): void {
 async function uploadPendingAcceptPhotos(): Promise<number[]> {
   const t = ticket.value
   if (!t || pendingAcceptFiles.value.length === 0) return []
+  const expectedTicketId = t.id
+  const generation = viewGeneration
   const validation = await validateStaticImageFiles(pendingAcceptFiles.value)
+  if (!isSameContext(generation, expectedTicketId)) throw new Error('STALE_TICKET_CONTEXT')
   if (!validation.valid) {
     acceptPhotoError.value = validation.message || '图片校验未通过'
     throw new Error(validation.code || 'VALIDATION_ERROR')
   }
   acceptPhotoUploading.value = true
   try {
-    const uploaded = await uploadTicketEvidencesApi(
-      t.id,
+    const uploaded = await ticketsStore.uploadEvidence(
+      expectedTicketId,
       pendingAcceptFiles.value,
       'ACCEPTANCE_PHOTO',
+      'acceptance',
     )
     const ids = uploaded.map((ev) => ev.id)
-    uploadedAcceptEvidenceIds.value = [...uploadedAcceptEvidenceIds.value, ...ids]
+    if (!isSameContext(generation, expectedTicketId)) throw new Error('STALE_TICKET_CONTEXT')
     pendingAcceptFiles.value = []
     if (acceptFileInputRef.value) {
       acceptFileInputRef.value.value = ''
@@ -698,11 +756,13 @@ async function uploadPendingAcceptPhotos(): Promise<number[]> {
 
 async function handleManualUploadAcceptPhotos(): Promise<void> {
   const t = ticket.value
-  if (!t || pendingAcceptFiles.value.length === 0) return
+  if (!t || ticketWriteBlocked.value || pendingAcceptFiles.value.length === 0) return
+  const expectedTicketId = t.id
+  const generation = viewGeneration
   bannerStore.clear()
   try {
     await uploadPendingAcceptPhotos()
-    await ticketsStore.fetchDetail(t.id)
+    if (!isSameContext(generation, expectedTicketId)) return
     actionSuccessMessage.value = '验收照片上传成功'
   } catch {
     // 校验提示或全局错误横幅处理
@@ -712,15 +772,18 @@ async function handleManualUploadAcceptPhotos(): Promise<void> {
 async function handleSubmitAcceptance(): Promise<void> {
   const t = ticket.value
   if (!t || !canSubmitAcceptance.value || acceptDecision.value === null) return
+  const expectedTicketId = t.id
+  const generation = viewGeneration
   const decision = acceptDecision.value
 
+  const existingAcceptIds = [...uploadedAcceptEvidenceIds.value]
   if (decision === 'APPROVED') {
     const ok = await confirmDialog(
       '通过后工单将关闭，不可再次返修，是否确认验收通过？',
       '确认验收通过',
       '确认通过',
     )
-    if (!ok) return
+    if (!ok || !isSameContext(generation, expectedTicketId)) return
   }
 
   bannerStore.clear()
@@ -728,14 +791,20 @@ async function handleSubmitAcceptance(): Promise<void> {
   lastReworkCreated.value = null
 
   try {
+    let acceptIds = existingAcceptIds
     if (pendingAcceptFiles.value.length > 0) {
-      await uploadPendingAcceptPhotos()
+      const uploadedIds = await uploadPendingAcceptPhotos()
+      if (!isSameContext(generation, expectedTicketId)) return
+      acceptIds = [...existingAcceptIds, ...uploadedIds]
+      if (ticketsStore.staleTicketIds.includes(expectedTicketId)) {
+        actionSuccessMessage.value = '照片上传成功，请重新加载后继续提交验收'
+        return
+      }
     }
-    const evidenceIds =
-      uploadedAcceptEvidenceIds.value.length > 0 ? uploadedAcceptEvidenceIds.value : undefined
+    const evidenceIds = acceptIds.length > 0 ? acceptIds : undefined
     const res = await acceptSubmit.run((key, onReplay) =>
       ticketsStore.submitAcceptance(
-        t.id,
+        expectedTicketId,
         {
           decision,
           comment: acceptComment.value.trim() || null,
@@ -745,13 +814,13 @@ async function handleSubmitAcceptance(): Promise<void> {
         onReplay,
       ),
     )
+    if (!isSameContext(generation, expectedTicketId)) return
     if (res.decision === 'REJECTED' && res.rework_order) {
       lastReworkCreated.value = res.rework_order
     }
     acceptDecision.value = null
     acceptComment.value = ''
-    uploadedAcceptEvidenceIds.value = []
-    actionSuccessMessage.value =
+      actionSuccessMessage.value =
       decision === 'APPROVED' ? '验收已通过，工单已关闭（CLOSED）' : '已驳回返修'
   } catch (err: unknown) {
     handleIdempotentError(err, acceptSubmit)
@@ -761,6 +830,10 @@ async function handleSubmitAcceptance(): Promise<void> {
 
 <template>
   <div class="ticket-detail-page">
+    <el-alert v-if="detailStale && !ticketsStore.writingTicketIds.includes(ticketId)" type="warning" :closable="false" show-icon>
+      操作已成功，但工单详情刷新失败；下方历史记录和关联数据可能不是最新。请重新加载详情后再操作。
+      <button type="button" class="tomori-btn" @click="loadDetail">重新加载详情</button>
+    </el-alert>
     <div class="tomori-page-header">
       <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap">
         <button type="button" class="tomori-btn" @click="router.push('/tickets')">
@@ -1093,11 +1166,14 @@ async function handleSubmitAcceptance(): Promise<void> {
                 v-if="pendingAcceptFiles.length > 0"
                 type="button"
                 class="tomori-btn"
-                :disabled="acceptPhotoUploading"
+                :disabled="acceptPhotoUploading || ticketWriteBlocked"
                 @click="handleManualUploadAcceptPhotos"
               >
                 {{ acceptPhotoUploading ? '上传中...' : `立即上传 (${pendingAcceptFiles.length} 张)` }}
               </button>
+            </div>
+            <div v-if="uploadedAcceptEvidenceIds.length > 0" class="hint-text" style="margin-top: 4px">
+              本会话已上传待绑定验收照片 {{ uploadedAcceptEvidenceIds.length }} 张（页面刷新后暂存不保留；已上传文件在上方证据对照区查看，重新上传会新增附件）
             </div>
             <div v-if="acceptPhotoError" class="tomori-field-error">{{ acceptPhotoError }}</div>
             <ul v-if="pendingAcceptFiles.length > 0" class="pending-file-list">
@@ -1337,14 +1413,14 @@ async function handleSubmitAcceptance(): Promise<void> {
                 </li>
               </ul>
               <div v-if="uploadedUrgeEvidenceIds.length > 0" class="hint-text" style="margin-top: 4px">
-                已上传督促凭证 {{ uploadedUrgeEvidenceIds.length }} 份
+                本会话已上传督促凭证 {{ uploadedUrgeEvidenceIds.length }} 份（页面刷新后暂存不保留；已上传文件在下方证据对照区查看，重新上传会新增附件）
               </div>
               <div v-if="urgeEvidenceError" class="tomori-field-error">{{ urgeEvidenceError }}</div>
               <div
                 v-else-if="uploadedUrgeEvidenceIds.length + pendingUrgeFiles.length === 0"
                 class="hint-text"
               >
-                未提供督促凭证时不可提交特批关闭
+                未提供督促凭证时不可提交特批关闭；若页面曾刷新，本会话暂存不会保留，历史附件可在详情证据区查看，需要重新选择文件上传（会新增附件）
               </div>
             </div>
           </div>

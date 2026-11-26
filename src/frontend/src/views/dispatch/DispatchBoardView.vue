@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getDispatchCandidatesApi } from '@/api/dispatches'
 import { triggerSlaScanApi } from '@/api/operations'
-import { getTicketDetailApi, listTicketsApi } from '@/api/tickets'
+import { listTicketsApi } from '@/api/tickets'
 import PriorityTag from '@/components/PriorityTag.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import { isApiError } from '@/shared/api'
@@ -35,6 +35,7 @@ import type {
 import { useErrorBannerStore } from '@/stores/errorBanner'
 import { useMetadataStore } from '@/stores/metadata'
 import { useTicketsStore } from '@/stores/tickets'
+import { useAuthStore } from '@/stores/auth'
 
 const QUEUE_STATUSES: ReadonlyArray<TicketStatus> = [
   'PENDING_DISPATCH',
@@ -67,13 +68,18 @@ const route = useRoute()
 const bannerStore = useErrorBannerStore()
 const metadataStore = useMetadataStore()
 const ticketsStore = useTicketsStore()
+const authStore = useAuthStore()
 const dispatchSubmit = useIdempotentSubmit()
 
 const queue = ref<FaultTicketOut[]>([])
 const loadingQueue = ref(false)
+const queueStale = ref(false)
 const selectedTicketId = ref<number | null>(null)
 const selectedDetail = ref<FaultTicketDetailOut | null>(null)
 const loadingDetail = ref(false)
+const detailLoadFailed = ref(false)
+let selectionGeneration = 0
+let candidateRequest = 0
 
 const candidatesOpen = ref(false)
 const candidatesData = ref<DispatchCandidatesResponseOut | null>(null)
@@ -82,6 +88,11 @@ const selectedTechAccountId = ref<number | undefined>(undefined)
 const dispatchRemark = ref('')
 const reassignReason = ref('')
 const reassignEscalate = ref(false)
+watch(selectedTicketId, () => {
+  selectionGeneration++
+  candidateRequest++
+  loadingCandidates.value = false
+}, { flush: 'sync' })
 
 const slaScanning = ref(false)
 const lastSlaScan = ref<SlaScanResponseOut | null>(null)
@@ -114,6 +125,7 @@ const isReassignMode = computed(() => {
 
 const canOpenDispatch = computed(() => {
   const st = selectedTicket.value?.status
+  if (queueStale.value || loadingDetail.value || detailLoadFailed.value || !selectedDetail.value || selectedDetail.value.id !== selectedTicketId.value || (selectedTicket.value && (ticketsStore.staleTicketIds.includes(selectedTicket.value.id) || ticketsStore.writingTicketIds.includes(selectedTicket.value.id)))) return false
   return (
     st === 'PENDING_DISPATCH' ||
     st === 'REWORK_PENDING_DISPATCH' ||
@@ -135,7 +147,7 @@ const selectedEligibleCandidate = computed<DispatchCandidateItem | null>(
 )
 
 const canDispatch = computed(() => {
-  if (dispatchSubmit.isSubmitting.value) return false
+  if (dispatchSubmit.isSubmitting.value || loadingCandidates.value) return false
   if (!selectedTicket.value || !canOpenDispatch.value || !selectedEligibleCandidate.value) return false
   if (isReassignMode.value && reassignReason.value.trim().length === 0) return false
   return true
@@ -155,18 +167,49 @@ function sortQueue(items: FaultTicketOut[]): FaultTicketOut[] {
   })
 }
 
+let selectedDetailRequest = 0
 async function loadSelectedDetail(ticketId: number): Promise<void> {
+  const request = ++selectedDetailRequest
+  selectedDetail.value = null
+  detailLoadFailed.value = false
   loadingDetail.value = true
   try {
-    selectedDetail.value = await getTicketDetailApi(ticketId)
+    const result = await ticketsStore.fetchDetail(ticketId)
+    if (request === selectedDetailRequest && selectedTicketId.value === ticketId) selectedDetail.value = result
   } catch {
-    // 全局错误横幅已处理
+    if (request === selectedDetailRequest && selectedTicketId.value === ticketId) detailLoadFailed.value = true
   } finally {
-    loadingDetail.value = false
+    if (request === selectedDetailRequest) loadingDetail.value = false
   }
 }
 
+let queueRequest = 0
+let activeQueueRequest = 0
+watch(() => authStore.sessionGeneration, () => {
+  queueRequest++
+  selectedDetailRequest++
+  candidateRequest++
+  loadingCandidates.value = false
+  activeQueueRequest = 0
+  loadingQueue.value = false
+  loadingDetail.value = false
+  queue.value = []
+  queueStale.value = false
+  selectedTicketId.value = null
+  selectedDetail.value = null
+  detailLoadFailed.value = false
+  candidatesData.value = null
+  candidatesOpen.value = false
+}, { flush: 'sync' })
+watch(() => ticketsStore.writeRevision, () => {
+  queueRequest++
+  queueStale.value = true
+  activeQueueRequest = 0
+  loadingQueue.value = false
+}, { flush: 'sync' })
 async function loadQueue(): Promise<void> {
+  const request = ++queueRequest
+  activeQueueRequest = request
   loadingQueue.value = true
   try {
     const commonParams = {
@@ -199,7 +242,9 @@ async function loadQueue(): Promise<void> {
       items = Array.from(dedup.values())
     }
 
+    if (request !== queueRequest) return
     queue.value = sortQueue(items)
+    queueStale.value = false
 
     const queryTicketId = Number(route.query.ticketId)
     if (selectedTicketId.value === null && Number.isFinite(queryTicketId)) {
@@ -215,6 +260,7 @@ async function loadQueue(): Promise<void> {
     if (queue.value.length === 0) {
       selectedTicketId.value = null
       selectedDetail.value = null
+      detailLoadFailed.value = false
       candidatesOpen.value = false
       candidatesData.value = null
       selectedTechAccountId.value = undefined
@@ -224,26 +270,36 @@ async function loadQueue(): Promise<void> {
   } catch {
     // 全局错误横幅已处理
   } finally {
-    loadingQueue.value = false
+    if (request === activeQueueRequest) {
+      activeQueueRequest = 0
+      loadingQueue.value = false
+    }
   }
 }
 
 async function openCandidateDrawer(): Promise<void> {
   if (!selectedTicket.value || !canOpenDispatch.value) return
+  const token = authStore.sessionGeneration
+  const ticketId = selectedTicket.value.id
+  const selection = selectionGeneration
+  const request = ++candidateRequest
+  const isCurrent = () => request === candidateRequest && selection === selectionGeneration && token === authStore.sessionGeneration && selectedTicketId.value === ticketId
   loadingCandidates.value = true
   candidatesOpen.value = true
+  candidatesData.value = null
   selectedTechAccountId.value = undefined
   dispatchSubmit.resetKey()
   try {
-    const res = await getDispatchCandidatesApi(selectedTicket.value.id)
+    const res = await getDispatchCandidatesApi(ticketId, true)
+    if (!isCurrent()) return
     candidatesData.value = res
     if (res.candidates.length > 0) {
       selectedTechAccountId.value = res.candidates[0].account_id
     }
   } catch (err: unknown) {
-    if (isApiError(err)) bannerStore.showFromApiError(err)
+    if (isCurrent() && isApiError(err)) bannerStore.showFromApiError(err)
   } finally {
-    loadingCandidates.value = false
+    if (isCurrent()) loadingCandidates.value = false
   }
 }
 
@@ -262,19 +318,22 @@ async function handleSelectTicket(ticket: FaultTicketOut): Promise<void> {
 async function handleConfirmDispatch(): Promise<void> {
   if (!selectedTicket.value || !selectedEligibleCandidate.value) return
   const ticket = selectedTicket.value
+  const token = authStore.sessionGeneration
+  const selection = selectionGeneration
+  const reassignMode = isReassignMode.value
   const tech = selectedEligibleCandidate.value
   const summary = [
     `工单号：${ticket.ticket_no}`,
     `维修员：${tech.full_name} (${tech.username})`,
     `所属区域：${selectedRegionDisplay.value}`,
     `48h 法定截止：${formatRepairDeadline(ticket.repair_deadline_at, ticket.status)}`,
-    isReassignMode.value ? `改派原因：${reassignReason.value.trim()}` : '',
+    reassignMode ? `改派原因：${reassignReason.value.trim()}` : '',
   ]
     .filter(Boolean)
     .join('\n')
 
   try {
-    await ElMessageBox.confirm(summary, isReassignMode.value ? '确认改派工单' : '确认派工', {
+    await ElMessageBox.confirm(summary, reassignMode ? '确认改派工单' : '确认派工', {
       confirmButtonText: '确认',
       cancelButtonText: '取消',
       type: 'info',
@@ -283,9 +342,10 @@ async function handleConfirmDispatch(): Promise<void> {
     return
   }
 
+  if (token !== authStore.sessionGeneration || selection !== selectionGeneration || selectedTicketId.value !== ticket.id || !canDispatch.value) return
   try {
     await dispatchSubmit.run(async (key, markReplayed) => {
-      if (isReassignMode.value) {
+      if (reassignMode) {
         await ticketsStore.reassign(
           ticket.id,
           {
@@ -314,7 +374,11 @@ async function handleConfirmDispatch(): Promise<void> {
         )
       }
     })
-    ElMessage.success(isReassignMode.value ? '改派成功' : '派工成功')
+    if (token !== authStore.sessionGeneration) return
+    ElMessage.success(`${ticket.ticket_no} ${reassignMode ? '改派成功' : '派工成功'}`)
+    if (selection !== selectionGeneration || selectedTicketId.value !== ticket.id) return
+    queueStale.value = true
+    selectedDetail.value = null
     reassignReason.value = ''
     reassignEscalate.value = false
     dispatchRemark.value = ''
@@ -323,6 +387,7 @@ async function handleConfirmDispatch(): Promise<void> {
     selectedTechAccountId.value = undefined
     await loadQueue()
   } catch (err: unknown) {
+    if (token !== authStore.sessionGeneration || selection !== selectionGeneration || selectedTicketId.value !== ticket.id) return
     if (isApiError(err)) {
       bannerStore.showFromApiError(err)
       if (err.error.code === 'DISPATCH_TECHNICIAN_NOT_ELIGIBLE') {
@@ -371,6 +436,14 @@ onMounted(async () => {
 
 <template>
   <div>
+    <el-alert v-if="queueStale || (selectedTicket && ticketsStore.staleTicketIds.includes(selectedTicket.id))" type="warning" :closable="false" show-icon>
+      操作已成功，但列表或详情刷新失败，显示的信息可能过期。请重新加载后再操作。
+      <button type="button" class="tomori-btn" @click="loadQueue">重新加载</button>
+    </el-alert>
+    <el-alert v-if="detailLoadFailed" type="warning" :closable="false" show-icon>
+      工单详情加载失败，已暂停派工和改派。请重新加载后再操作。
+      <button type="button" class="tomori-btn" @click="loadQueue">重新加载</button>
+    </el-alert>
     <div class="tomori-page-header">
       <div>
         <h2 class="tomori-page-title">区域派单调度台</h2>

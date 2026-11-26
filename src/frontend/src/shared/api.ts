@@ -14,6 +14,7 @@ export interface RequestMetaFlags {
 declare module 'axios' {
   export interface AxiosRequestConfig {
     metaFlags?: RequestMetaFlags
+    sessionGeneration?: number
   }
 }
 
@@ -88,6 +89,7 @@ export const apiClient: AxiosInstance = axios.create({
 
 apiClient.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   const authStore = useAuthStore(pinia)
+  config.sessionGeneration = authStore.sessionGeneration
   if (authStore.token) {
     config.headers.set('Authorization', `Bearer ${authStore.token}`)
   }
@@ -102,10 +104,13 @@ apiClient.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   }
 
   return config
-})
+}, undefined, { synchronous: true })
 
 apiClient.interceptors.response.use(
   (response) => {
+    if (response.config.sessionGeneration !== useAuthStore(pinia).sessionGeneration) {
+      return Promise.reject(new Error('STALE_SESSION'))
+    }
     const replayHeader = response.headers['x-idempotent-replay']
     if (String(replayHeader).toLowerCase() === 'true') {
       // X-Idempotent-Replay: true 是本项目扩展响应头（非 IETF 草案内容），按首次状态码正常放行
@@ -120,6 +125,9 @@ apiClient.interceptors.response.use(
     const bannerStore = useErrorBannerStore(pinia)
 
     if (axios.isAxiosError(rawErr)) {
+      if (rawErr.config?.sessionGeneration !== undefined && rawErr.config.sessionGeneration !== authStore.sessionGeneration) {
+        return Promise.reject(new Error('STALE_SESSION'))
+      }
       const apiErr = normalizeAxiosError(rawErr)
       const metaFlags = rawErr.config?.metaFlags
       const requestUrl = rawErr.config?.url || ''

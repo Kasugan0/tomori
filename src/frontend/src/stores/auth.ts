@@ -19,6 +19,7 @@ export const useAuthStore = defineStore('auth', () => {
   )
   const scopeAuthorizations = ref<ScopeAuthorizationOut[]>([])
   const meLoaded = ref(false)
+  const sessionGeneration = ref(0)
 
   const isAuthenticated = computed(() => token.value !== null && token.value.length > 0)
 
@@ -53,7 +54,9 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function login(username: string, secret: string): Promise<void> {
+    const generation = ++sessionGeneration.value
     const res = await loginApi({ username, password: secret })
+    if (generation !== sessionGeneration.value) throw new Error('STALE_SESSION')
     persistToken(res.access_token, res.account.role_code)
     account.value = res.account
     await loadMe()
@@ -61,7 +64,9 @@ export const useAuthStore = defineStore('auth', () => {
 
   async function loadMe(): Promise<void> {
     if (!token.value) return
+    const generation = sessionGeneration.value
     const me = await fetchMeApi()
+    if (generation !== sessionGeneration.value) throw new Error('STALE_SESSION')
     account.value = me.account
     roleCode.value = me.role_code
     scopeAuthorizations.value = me.scope_authorizations ?? []
@@ -70,6 +75,7 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   function clearSession(): void {
+    sessionGeneration.value++
     persistToken(null, null)
     account.value = null
     scopeAuthorizations.value = []
@@ -78,12 +84,13 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function logout(): Promise<void> {
+    const generation = sessionGeneration.value
     try {
       if (token.value) {
         await logoutApi()
       }
     } finally {
-      clearSession()
+      if (generation === sessionGeneration.value) clearSession()
     }
   }
 
@@ -93,6 +100,7 @@ export const useAuthStore = defineStore('auth', () => {
     roleCode,
     scopeAuthorizations,
     meLoaded,
+    sessionGeneration,
     isAuthenticated,
     defaultHomeRoute,
     login,
