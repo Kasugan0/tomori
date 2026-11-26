@@ -8,6 +8,7 @@ import { getTicketDetailApi, listTicketsApi } from '@/api/tickets'
 import PriorityTag from '@/components/PriorityTag.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import { isApiError } from '@/shared/api'
+import { fetchAllPages } from '@/shared/pagination'
 import {
   FAULT_TYPE_LABELS,
   getNotEligibleReasonText,
@@ -173,21 +174,25 @@ async function loadQueue(): Promise<void> {
       priority: filters.value.priority,
       is_sla_overdue: filters.value.is_sla_overdue ? true : undefined,
       keyword: filters.value.keyword.trim() || undefined,
-      page: 1,
-      page_size: 100,
     }
 
     let items: FaultTicketOut[] = []
     if (filters.value.status) {
-      const res = await listTicketsApi({ ...commonParams, status: filters.value.status })
-      items = res.items.filter((t) => QUEUE_STATUSES.includes(t.status))
+      const fetched = await fetchAllPages((page, pageSize) =>
+        listTicketsApi({ ...commonParams, status: filters.value.status, page, page_size: pageSize }),
+      )
+      items = fetched.filter((t) => QUEUE_STATUSES.includes(t.status))
     } else {
       const responses = await Promise.all(
-        QUEUE_STATUSES.map((st) => listTicketsApi({ ...commonParams, status: st })),
+        QUEUE_STATUSES.map((st) =>
+          fetchAllPages((page, pageSize) =>
+            listTicketsApi({ ...commonParams, status: st, page, page_size: pageSize }),
+          ),
+        ),
       )
       const dedup = new Map<number, FaultTicketOut>()
-      for (const res of responses) {
-        for (const item of res.items) {
+      for (const fetched of responses) {
+        for (const item of fetched) {
           dedup.set(item.id, item)
         }
       }

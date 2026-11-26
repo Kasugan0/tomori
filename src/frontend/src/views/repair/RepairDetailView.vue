@@ -2,7 +2,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
-import { listDispatchesApi, listRepairProcessesApi } from '@/api/dispatches'
+import { listRepairProcessesApi } from '@/api/dispatches'
 import { getTicketDetailApi, uploadTicketEvidencesApi } from '@/api/tickets'
 import AuthImage from '@/components/AuthImage.vue'
 import PriorityTag from '@/components/PriorityTag.vue'
@@ -209,19 +209,9 @@ async function resolveDispatchRecord(id: number): Promise<DispatchRecordOut | nu
   const cached = dispatchesStore.myDispatches.find((item) => item.id === id)
   if (cached) return cached
 
-  await dispatchesStore.fetchMine({ page_size: 100 })
-  const fromMine = dispatchesStore.myDispatches.find((item) => item.id === id)
-  if (fromMine) return fromMine
-
-  let page = 2
-  while (page <= 5) {
-    const res = await listDispatchesApi({ page, page_size: 100 })
-    const found = res.items.find((item) => item.id === id)
-    if (found) return found
-    if (res.items.length < 100) break
-    page += 1
-  }
-  return null
+  // fetchMine 已全量翻页拉取，命中即返回，否则判为无此派工
+  await dispatchesStore.fetchMine()
+  return dispatchesStore.myDispatches.find((item) => item.id === id) ?? null
 }
 
 async function loadDetail(): Promise<void> {
@@ -254,24 +244,30 @@ async function loadDetail(): Promise<void> {
   }
 }
 
+// 仅在写操作成功后调用：刷新失败不改变写入成功语义——
+// 本地态已由写响应先行更新，刷新失败仅以全局错误横幅提示。
 async function refreshAfterAction(): Promise<void> {
-  const id = dispatchId.value
-  const fresh = dispatchesStore.myDispatches.find((item) => item.id === id) ?? null
-  if (fresh) {
-    dispatch.value = fresh
-  } else {
-    const resolved = await resolveDispatchRecord(id)
-    dispatch.value = resolved
-  }
+  try {
+    const id = dispatchId.value
+    const fresh = dispatchesStore.myDispatches.find((item) => item.id === id) ?? null
+    if (fresh) {
+      dispatch.value = fresh
+    } else {
+      const resolved = await resolveDispatchRecord(id)
+      dispatch.value = resolved
+    }
 
-  const targetTicketId = dispatch.value?.ticket_id ?? ticketDetail.value?.id
-  if (targetTicketId) {
-    const [tDetail, procRes] = await Promise.all([
-      getTicketDetailApi(targetTicketId),
-      listRepairProcessesApi({ ticket_id: targetTicketId }),
-    ])
-    ticketDetail.value = tDetail
-    repairProcesses.value = Array.isArray(procRes) ? procRes : procRes.items
+    const targetTicketId = dispatch.value?.ticket_id ?? ticketDetail.value?.id
+    if (targetTicketId) {
+      const [tDetail, procRes] = await Promise.all([
+        getTicketDetailApi(targetTicketId),
+        listRepairProcessesApi({ ticket_id: targetTicketId }),
+      ])
+      ticketDetail.value = tDetail
+      repairProcesses.value = Array.isArray(procRes) ? procRes : procRes.items
+    }
+  } catch {
+    // 刷新失败由响应拦截器的全局横幅呈现，不再上抛覆盖写入成功态
   }
 }
 
@@ -337,7 +333,10 @@ async function handleAccept(): Promise<void> {
   bannerStore.clear()
   actionSuccessMessage.value = null
   try {
-    await acceptSubmit.run((key, onReplay) => dispatchesStore.accept(d.id, key, onReplay))
+    const res = await acceptSubmit.run((key, onReplay) =>
+      dispatchesStore.accept(d.id, key, onReplay),
+    )
+    dispatch.value = res
     await refreshAfterAction()
     actionSuccessMessage.value = '接单成功，工单已进入维修中（IN_REPAIR）'
   } catch (err: unknown) {
@@ -358,9 +357,10 @@ async function handleReject(): Promise<void> {
   bannerStore.clear()
   actionSuccessMessage.value = null
   try {
-    await rejectSubmit.run((key, onReplay) =>
+    const res = await rejectSubmit.run((key, onReplay) =>
       dispatchesStore.reject(d.id, rejectReason.value.trim(), key, onReplay),
     )
+    dispatch.value = res
     rejectBoxVisible.value = false
     rejectReason.value = ''
     await refreshAfterAction()
@@ -489,9 +489,9 @@ async function handleComplete(): Promise<void> {
       ),
     )
 
+    dispatch.value = res.dispatch
     await refreshAfterAction()
-    const updatedDispatch = res.dispatch
-    actionSuccessMessage.value = `维修完工已提交（派工状态：${updatedDispatch?.status ?? 'COMPLETED'}，工单状态：${res.ticket.status}）`
+    actionSuccessMessage.value = `维修完工已提交（派工状态：${res.dispatch.status}，工单状态：${res.ticket.status}）`
   } catch (err: unknown) {
     if (isApiError(err) && err.error.code === 'ELECTRICAL_SAFETY_CHECK_REQUIRED') {
       const rawMissing = err.error.details?.missing_items
@@ -515,7 +515,8 @@ async function handleEscalateSubmit(): Promise<void> {
   actionSuccessMessage.value = null
   escalateSubmitting.value = true
   try {
-    await dispatchesStore.escalate(d.id, escalateReason.value.trim())
+    const res = await dispatchesStore.escalate(d.id, escalateReason.value.trim())
+    dispatch.value = res
     escalateDialogVisible.value = false
     escalateReason.value = ''
     await refreshAfterAction()

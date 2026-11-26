@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory, type RouteLocationRaw } from 'vue-router'
+import { isApiError } from '@/shared/api'
 import type { RoleCode } from '@/shared/types'
 import { pinia } from '@/stores/pinia'
 import { useAuthStore } from '@/stores/auth'
@@ -159,9 +160,13 @@ router.beforeEach(async (to): Promise<boolean | RouteLocationRaw> => {
   if (auth.isAuthenticated && !auth.meLoaded) {
     try {
       await auth.loadMe()
-    } catch {
-      auth.clearSession()
-      return { path: '/login', query: { redirect: to.fullPath } }
+    } catch (err) {
+      if (isApiError(err) && err.httpStatus === 401) {
+        auth.clearSession()
+        return { path: '/login', query: { redirect: to.fullPath } }
+      }
+      // 非 401 故障（网络抖动 / 5xx）：保留会话，用已持久化的角色继续导航；
+      // meLoaded 仍为 false，下次导航会自动重试 loadMe，错误由全局横幅呈现。
     }
   }
 

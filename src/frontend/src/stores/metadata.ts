@@ -2,6 +2,7 @@ import { ref } from 'vue'
 import { defineStore } from 'pinia'
 import { listFacilityAssetsApi, listLightingPointsApi, listRegionsApi } from '@/api/admin'
 import { listAccountsApi } from '@/api/auth'
+import { fetchAllPages } from '@/shared/pagination'
 import type {
   AccountOut,
   FacilityAssetOut,
@@ -21,20 +22,23 @@ export const useMetadataStore = defineStore('metadata', () => {
   }
 
   async function loadPoints(regionId?: number): Promise<LightingPointOut[]> {
-    const res = await listLightingPointsApi({ region_id: regionId, page_size: 100 })
-    points.value = res.items
+    points.value = await fetchAllPages((page, pageSize) =>
+      listLightingPointsApi({ region_id: regionId, page, page_size: pageSize }),
+    )
     return points.value
   }
 
   async function loadAssets(lightingPointId?: number): Promise<FacilityAssetOut[]> {
-    const res = await listFacilityAssetsApi({ lighting_point_id: lightingPointId, page_size: 100 })
-    assets.value = res.items
+    assets.value = await fetchAllPages((page, pageSize) =>
+      listFacilityAssetsApi({ lighting_point_id: lightingPointId, page, page_size: pageSize }),
+    )
     return assets.value
   }
 
   async function loadAccounts(): Promise<AccountOut[]> {
-    const res = await listAccountsApi({ page_size: 100 })
-    accounts.value = res.items
+    accounts.value = await fetchAllPages((page, pageSize) =>
+      listAccountsApi({ page, page_size: pageSize }),
+    )
     return accounts.value
   }
 

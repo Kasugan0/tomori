@@ -96,6 +96,22 @@ async function handleRetry(item: NotificationTaskOut): Promise<void> {
   }
 }
 
+// TECHNICIAN 无 /tickets/:id 路由权限（router meta.roles），其工单关联通知
+// 应跳到自己可访问的派工详情 / 待办；ADMIN/INSPECTOR 仍跳工单详情。
+function relatedTarget(item: NotificationTaskOut): string | null {
+  if (authStore.roleCode === 'TECHNICIAN') {
+    return item.related_dispatch_id ? `/repairs/${item.related_dispatch_id}` : '/repairs'
+  }
+  return item.related_ticket_id ? `/tickets/${item.related_ticket_id}` : null
+}
+
+function relatedLabel(item: NotificationTaskOut): string {
+  if (authStore.roleCode === 'TECHNICIAN') {
+    return item.related_dispatch_id ? `查看派工 #${item.related_dispatch_id}` : '查看我的待办'
+  }
+  return `查看工单 #${item.related_ticket_id}`
+}
+
 async function handleAcknowledge(item: NotificationTaskOut): Promise<void> {
   actingId.value = item.id
   try {
@@ -197,12 +213,12 @@ onMounted(() => {
             标记已读
           </button>
           <button
-            v-if="item.related_ticket_id"
+            v-if="relatedTarget(item)"
             type="button"
             class="tomori-btn"
-            @click="router.push(`/tickets/${item.related_ticket_id}`)"
+            @click="router.push(relatedTarget(item) as string)"
           >
-            查看工单 #{{ item.related_ticket_id }}
+            {{ relatedLabel(item) }}
           </button>
         </div>
       </div>
