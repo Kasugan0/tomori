@@ -57,11 +57,27 @@ PYTHONDONTWRITEBYTECODE=1 uv run --no-sync pytest -p no:cacheprovider -q tests/u
 
 审计记录结果为 `22 passed in 1.95s`；视觉并发和导出清单回归使用模拟，不能替代真实模型训练或压力测试。
 
+## 本轮增量修复与验证
+
+本轮在上述提交之后继续修复数据集复用时的嵌套残留和输出路径风险：在清理前统一检查分片目录、符号链接、元数据路径类型及元数据硬链接，遇到不安全路径即失败；该检查以输出目录不被其他进程并发修改为前提。工单和会话页面也补强了写入后刷新失败、旧请求迟到及账号切换时的状态隔离。独立复审的具体适用范围仍以其测试证据为准。
+
+浏览器全量套件应从项目根目录使用两个隔离进程串行运行，日志目录必须是尚不存在的新路径：
+
+```bash
+uv run --no-sync python tests/e2e/run_split.py --log-dir <new path>
+```
+
+入口先收集并核对同步、异步分组，再分别申请和释放 E2E 租约，记录每组测试、截图及退出码。在外层 guard 下通过 `python -c` 设置 `LOG_DIR`/`ARTIFACT_DIR` 后，同进程调用 `pytest.main(['tests/e2e', '-q'])` 混跑曾失败（`final3-e2e.log`：29 failed、48 passed；其中 28 项为事件循环冲突，1 项为通知流程建票时的重复活跃工单 409 冲突），必须使用上述分组入口和全新日志目录；不能以混跑结果替代分组运行。`.team/notes/tester/logs/task46/final5-e2e/` 本地日志记录同步组 `49 passed, 2 warnings in 152.66s`、异步组 `28 passed, 2 warnings in 54.60s`；两组 claim、pytest、release 退出码均为 0。日志属于被忽略的本地材料，结果对应运行时工作树，不能作为某个提交的字节级证明。
+
+本轮最终工作树测试日志还记录 `uv run --no-sync pytest tests/unit -q` 的 `85 passed in 3.67s`，以及 `uv run --no-sync pytest tests/integration -q` 的 `117 passed, 1 skipped in 78.42s`；跳过项不计作通过。integration 日志未打印跳过原因；tester 另运行 `uv run --no-sync pytest tests/integration/test_migration_table_guard_regression.py -q -rs`，日志显示因未设置隔离容器所需的 `MIGRATION_GUARD_DSN` 跳过。结合该文件唯一测试项和 tester 核查，跳过项为 `test_0003_allows_extra_table_but_rejects_missing_expected_table`；该单项复核未连接数据库。采样 HEAD 为 `7ba22b98e12725e3ecaace57f8351265283f0fac`，测试覆盖当时有未提交变更的工作树，不能归因于该提交本身。前端 `pnpm --dir src/frontend typecheck`、`lint` 与 `build` 均报告退出码 0；源码及测试的 214 个路径在测试前后哈希一致，不能据此推断所有工作树文件未变。
+
+本地模型冒烟日志记录在 1280 输入尺寸、置信度 0.25、IoU 0.7 下，PT 与 ONNX 模型分别对三张 D30 样图均返回检测框；ONNX 使用 CPUExecutionProvider。该小样本冒烟只证明记录中的推理调用返回结果，不证明精度、导出来源或多进程并发安全。
+
 ## 尚未验证的范围
 
 - 历史 `streetlight_v5` 的 `metrics.json` 中 `best.pt` 哈希为 `a557f4a7…`，而 `SHA256SUMS` 中为 `a067b0b0…`。原精修目录缺失，无法追溯权重身份或确定差异原因；需重新训练或重建并核对权重、指标和导出模型。
 - 未完成真实模型多进程并发和压力测试、完整重训与数据集重建，也未验证所有故障及权限组合。
-- 最终 schema 收紧后的完整浏览器 E2E 未重跑；局部浏览器通过不能替代完整闭环。
+- 近期完整浏览器套件已按上述两个隔离进程分组运行；它不能证明所有浏览器、环境与并发交错。
 - 远端 GPU 环境、实际部署同步与备份恢复、生产配置、真实外部通知网关及其中断重试未验证；Python 依赖未完成漏洞库扫描。
 - 独立复审报告包含中途状态与后续修复，不能把其中阶段性结论直接当成最终版本的运行结果。`audits/` 与 `.team/` 是被 Git 忽略的本地材料，不随仓库交付；`docs/team/` 亦为本地协作材料。
 
