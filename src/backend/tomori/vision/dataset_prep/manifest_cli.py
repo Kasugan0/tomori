@@ -336,14 +336,56 @@ def prepare_dataset(cfg: DatasetPrepConfig) -> PrepResult:
     # 防止换分组/种子复用输出目录时旧 split 残留样本造成跨 split 污染
     # （内存校验只覆盖本批样本，盘上残留不参与 leakage_checks）
     out_dir = cfg.output_dir
-    for split_name in ("train", "val", "test"):
-        for sub in ("images", "labels"):
-            split_dir = out_dir / sub / split_name
-            if split_dir.is_dir():
-                for stale in split_dir.iterdir():
-                    if stale.is_file() or stale.is_symlink():
-                        stale.unlink()
-            split_dir.mkdir(parents=True, exist_ok=True)
+    split_dirs = [
+        out_dir / sub / split_name
+        for split_name in ("train", "val", "test")
+        for sub in ("images", "labels")
+    ]
+    # fail-fast 预检 1/3：output_dir 根允许为符号链接（用户显式选定的输出根），
+    # 但必须指向目录；其下 images/labels、六个 split 目录、data.yaml 与
+    # prep_manifest.json 一律禁止符号链接或已存在的非预期类型，
+    # 否则 is_dir()/iterdir()/write_text 会跟随链接把 unlink/覆写落到输出根外，
+    # 或 split 路径是普通文件时在先前 split 清完后 mkdir 失败造成部分清理
+    if out_dir.exists() and not out_dir.is_dir():
+        raise RuntimeError(f"输出根不是目录，拒绝继续: {out_dir}")
+    dir_paths = [out_dir / "images", out_dir / "labels", *split_dirs]
+    file_paths = [out_dir / "data.yaml", out_dir / "prep_manifest.json"]
+    blocked = [
+        str(path)
+        for path in dir_paths
+        if path.is_symlink() or (path.exists() and not path.is_dir())
+    ]
+    blocked += [
+        str(path)
+        for path in file_paths
+        if path.is_symlink() or (path.exists() and not path.is_file())
+    ]
+    if blocked:
+        raise RuntimeError(f"输出路径存在符号链接或非预期类型，拒绝继续: {blocked}")
+    linked_metadata = [
+        str(path) for path in file_paths if path.is_file() and path.stat().st_nlink > 1
+    ]
+    if linked_metadata:
+        raise RuntimeError(f"输出元数据存在多个硬链接，拒绝覆盖: {linked_metadata}")
+    # fail-fast 预检 2/3：任何嵌套子目录（含空目录与目录符号链接）都可能是
+    # 旧数据残留或用户文件，统一报路径拒绝自动清理——不得逐 split 清一半才发现问题
+    nested_dirs = [
+        str(child)
+        for split_dir in split_dirs
+        if split_dir.is_dir()
+        for child in split_dir.iterdir()
+        if child.is_dir()
+    ]
+    if nested_dirs:
+        raise RuntimeError(
+            f"输出目录存在嵌套子目录，拒绝自动清理以免误删或残留旧数据: {nested_dirs}"
+        )
+    for split_dir in split_dirs:
+        if split_dir.is_dir():
+            for stale in split_dir.iterdir():
+                if stale.is_file() or stale.is_symlink():
+                    stale.unlink()
+        split_dir.mkdir(parents=True, exist_ok=True)
 
     split_image_counts: Counter[str] = Counter()
     split_box_counts: Counter[str] = Counter()
