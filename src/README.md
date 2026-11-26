@@ -7,27 +7,27 @@ src/
 ├── backend/                  # 后端 Python（uv/pip 可安装 src layout）
 │   └── tomori/               # 唯一包根（pyproject.toml module-name="tomori"/module-root="src/backend"）
 │       ├── api/              # 薄壳（deps/errors/idempotency/v1：auth/dispatches/health/master_data/operations/tickets）
-│       │   └── v1/           # auth(12)/dispatches(10)/health(1)/master_data(13)/operations(12)/tickets(13)
+│       │   └── v1/           # auth(12)/dispatches(10)/health(1)/master_data(12)/operations(12)/tickets(14)
 │       ├── services/         # 重逻辑（state_machine/ticket_service/dispatch/rework/sla/grading/auth/media/exceptions）
 │       ├── models/           # SQLAlchemy 17 表（76 CHECK/41 FK/37 索引/6 部分唯一）
 │       ├── schemas/          # Pydantic 出参/错误契约（auth/common/dispatch/master_data/operations/ticket）
 │       ├── workers/          # notifier（通知投递）+ sla_scanner（定时 SLA 扫描）
-│       ├── vision/           # 视觉 13 文件（whitelist/client/mapping/metrics/contract/errors/image_io/baseline/config/eda/dataset_prep/trainer/__init__）
+│       ├── vision/           # 视觉推理、训练与数据集准备（dataset_prep 为子包）
 │       ├── db/               # base / session / types
-│       └── settings.py       # Settings（.env/application.yml 字段映射）
+│       └── settings.py       # Settings（从环境变量和 .env 加载）
 ├── frontend/                 # Vue 3 + TypeScript + Vite + Element Plus（pnpm 独立安装，不再用 `web/`）
 │   ├── src/                  # views / components / stores / api / router / main.ts
 │   ├── vite.config.ts        # 开发/构建（proxy → backend 18141）
-│   ├── package.json          # pin 精确版本（`D-23`）
+│   ├── package.json          # 依赖版本约束（含 ^ 范围及精确版本）；锁定结果见 pnpm-lock.yaml
 │   └── dist/                 # 构建产物（gitignored）
 └── database/
     ├── schema.sql            # 17 表直建 DDL（独立于 Alembic，psql 直建）
     └── seed.sql              # 演示种子（3 角色/3 区域/4 账号/6 授权/5 规则/3 点位/2 工单）
 
-config/application.example.yml  # `__PLACEHOLDER__` YAML 模板（与 `settings.py`/`env` 字段一一映射）
+config/application.example.yml  # 字段参考模板；应用不加载 YAML，生效配置来自环境变量和 .env
 migrations/versions/            # Alembic 迁移（0001..0004）
-tests/{unit,integration,e2e}    # 118 单测/集成 + 31 E2E
-deploy/                         # stack-guard.sh + compose.yaml + init-dbs.sql
+tests/{unit,integration,e2e}    # 单元、集成及 E2E 测试；历史快照：118 单测/集成 + 31 E2E
+deploy/                         # stack-guard.sh + postgres/init-dbs.sql（compose.yaml 位于仓库根）
 ```
 
 ## 依赖安装
@@ -64,6 +64,6 @@ pnpm --dir src/frontend typecheck
 
 - `import` 统一为 **`tomori.*`**（`src/backend/tomori` 为唯一包根，`module-root = "src/backend"`）；
 - `vision` 重型依赖（`ultralytics`/`onnxruntime`/`cv2`）走**函数内延迟导入**（`baseline`/`client`/`mapping` 层），保证纯后端无 `vision` extra 也可 `import tomori.*`；
-- `vision` 模块共 **13** `.py` 文件（`baseline`/`client`/`config`/`contract`/`dataset_prep`/`eda`/`errors`/`image_io`/`__init__`/`mapping`/`metrics`/`trainer`/`whitelist`）；
+- `vision` 源码以 `vision/` 包与 `dataset_prep` 子包组织（`baseline`/`client`/`config`/`contract`/`eda`/`errors`/`image_io`/`mapping`/`metrics`/`trainer`/`whitelist` 等）；
 - 运行时产物 `vision/{weights,reports,datasets,runs}`（gitignored）仍在**仓库根 `vision/`**，与 `src/backend/tomori/vision/` 源码分离；
 - `web/` 目录已废止——前端权威位置为 **`src/frontend/`**。
